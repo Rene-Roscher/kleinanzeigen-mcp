@@ -1,0 +1,9 @@
+services:
+  kleinanzeigen-mcp:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # put a TLS reverse proxy in front for remote use
+    env_file: .env
+    # volumes:
+    #   - ./proxies.txt:/app/proxies.txt:ro   # + KA_PROXY_FILE=/app/proxies.txt
