@@ -42,14 +42,17 @@ log = logging.getLogger(__name__)
 # and silently localise later pages. We want every request to be explicit.
 _STICKY_COOKIES = ("__ka-ls", "__ka-sh")
 
+# Only structures of an actual Akamai/captcha interstitial. Generic phrases like
+# "Access Denied" are NOT used on 200 pages: they can legitimately appear in a
+# listing title or the search keyword itself.
 _CHALLENGE_MARKERS = (
-    "Access Denied",
-    "bist du ein Mensch",
-    "Bist du ein Mensch",
-    "captcha-delivery",
     "/_sec/cp_challenge",
     "sec-if-cpt-container",
+    "captcha-delivery.com",
+    "bm-verify",
 )
+# Anything that proves we got a real kleinanzeigen page.
+_REAL_PAGE_MARKERS = ("data-adid", 'id="viewad-', "<astro-island", 'id="site-header"', "userprofile")
 
 
 class UpstreamError(Exception):
@@ -66,6 +69,10 @@ class BlockedError(UpstreamError):
 
 class NotFoundError(UpstreamError):
     """The ad / seller does not exist (anymore)."""
+
+
+class NetworkError(UpstreamError):
+    """Connection-level failure (DNS, TCP, TLS, proxy) – the only error worth failing over on."""
 
 
 class PolicyError(UpstreamError):
@@ -123,7 +130,7 @@ def parse_proxy_list(raw: str, file: str | None = None) -> list[str | None]:
         items += Path(file).read_text(encoding="utf-8").splitlines()
     out: list[str | None] = []
     for item in items:
-        item = item.split("#", 1)[0].strip()
+        item = re.split(r"(?:^|\s)#", item, maxsplit=1)[0].strip()  # '#' inside a password is kept
         if not item:
             continue
         if item.lower() == "direct":
@@ -158,6 +165,7 @@ class Session:
         self.blocked_until = 0.0
         self.consecutive_blocks = 0
         self.down_until = 0.0  # network-level failure (dead proxy etc.), not a block
+        self.needs_reset = False
         self.consecutive_failures = 0
         self.requests = 0
         self.blocks = 0
@@ -296,6 +304,7 @@ class Fetcher:
         if retry_after:
             backoff = max(backoff, min(retry_after, self.s.cooldown_max_s))
         sess.blocked_until = time.monotonic() + backoff
+        sess.needs_reset = True  # start with fresh cookies once the cooldown is over
         log.warning("upstream block on %s (%s) – pausing this session for %.0fs", sess.label, reason, backoff)
         return BlockedError(f"kleinanzeigen.de blocked/limited the request ({reason})", backoff)
 
@@ -303,10 +312,10 @@ class Fetcher:
     def _looks_like_challenge(resp: httpx.Response) -> bool:
         if resp.status_code in (403, 429):
             return True
-        if "html" not in resp.headers.get("content-type", ""):
+        if resp.status_code != 200 or "html" not in resp.headers.get("content-type", ""):
             return False
-        head = resp.text[:20_000]
-        return any(m in head for m in _CHALLENGE_MARKERS) and "data-adid" not in head
+        text = resp.text
+        return any(m in text for m in _CHALLENGE_MARKERS) and not any(m in text for m in _REAL_PAGE_MARKERS)
 
     async def _warmup(self, sess: Session) -> None:
         """Land on the homepage once per session, like a person opening the site."""
@@ -320,10 +329,12 @@ class Fetcher:
                 await self._send(sess, "/", self._nav_headers(None), allow_redirects=1)
             except BlockedError:
                 raise
-            except UpstreamError as e:  # warm-up is best-effort ...
-                if "network error" in str(e) and len(self.sessions) > 1:
+            except NetworkError as e:  # warm-up is best-effort ...
+                if len(self.sessions) > 1:
                     sess.warmed_up = False
                     raise  # ... but a dead proxy should be parked right away
+                log.info("warm-up via %s failed: %s", sess.label, e)
+            except UpstreamError as e:
                 log.info("warm-up via %s failed: %s", sess.label, e)
 
     # ------------------------------------------------------------ core fetch
@@ -349,7 +360,7 @@ class Fetcher:
                     resp = await sess.client.get(url, headers=headers)
                     _ = resp.text  # decode while we still hold the slot
                     error: Exception | None = None
-                except (httpx.TransportError, httpx.ProxyError) as e:
+                except httpx.HTTPError as e:  # transport, proxy, decoding, invalid URL …
                     error = e
                 finally:
                     sess.drop_sticky_cookies()
@@ -362,7 +373,9 @@ class Fetcher:
                     self.stats.retries += 1
                     await asyncio.sleep(1.5 * attempt + random.random())
                     continue
-                raise UpstreamError(f"network error via {sess.label}: {error!r}") from error
+                if isinstance(error, httpx.TransportError):
+                    raise NetworkError(f"network error via {sess.label}: {error!r}") from error
+                raise UpstreamError(f"bad response via {sess.label}: {error!r}") from error
 
             status = resp.status_code
             self.stats.last_status = status
@@ -374,7 +387,7 @@ class Fetcher:
 
             if status in (301, 302, 303, 307, 308) and "location" in resp.headers:
                 if allow_redirects <= 0:
-                    return FetchResult(str(resp.url), status, "", redirected_from)
+                    raise UpstreamError(f"unexpected redirect {resp.url} -> {resp.headers['location']}")
                 redirected_from = redirected_from or str(resp.url)
                 url = urljoin(str(resp.url), resp.headers["location"])
                 allow_redirects -= 1
@@ -397,6 +410,7 @@ class Fetcher:
 
             sess.consecutive_blocks = 0
             sess.consecutive_failures = 0
+            sess.down_until = 0.0
             return FetchResult(str(resp.url), status, resp.text, redirected_from)
 
     async def _robots_allows(self, path: str) -> bool:
@@ -416,14 +430,19 @@ class Fetcher:
         tried = 0
         while True:
             sess = self._pick_session()
+            if sess.needs_reset:
+                sess.needs_reset = False
+                await sess.reset()
             try:
                 await self._warmup(sess)
                 return await self._send(sess, path, headers, allow_redirects)
             except (BlockedError, NotFoundError, PolicyError):
                 raise
-            except UpstreamError as e:
+            except NetworkError:
+                # Only connection failures fail over. HTTP errors (5xx/4xx) are the
+                # site's answer – repeating them on every proxy would just hammer it.
                 tried += 1
-                if len(self.sessions) > 1 and "network error" in str(e):
+                if len(self.sessions) > 1:
                     pause = sess.mark_down()
                     log.info("network error via %s – parked for %.0fs, failing over", sess.label, pause)
                 if tried >= len(self.sessions):

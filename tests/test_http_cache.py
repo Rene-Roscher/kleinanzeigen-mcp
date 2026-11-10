@@ -71,10 +71,19 @@ async def test_block_triggers_cooldown_and_stops_traffic():
 
 async def test_challenge_page_detected():
     rec = Recorder(lambda r: httpx.Response(200, headers={"content-type": "text/html"},
-                                            text="<html><title>Access Denied</title></html>"))
+                                            text='<html><div id="sec-if-cpt-container"></div></html>'))
     f = Fetcher(settings(), transport=httpx.MockTransport(rec))
     with pytest.raises(BlockedError):
         await f.get_page("/")
+    await f.aclose()
+
+async def test_search_for_access_denied_is_not_a_block(fixture):
+    # regression: the keyword lands in <title>; a generic phrase must not trigger a cooldown
+    html = fixture("search_new.html.gz").replace("<title>", "<title>Access Denied – bist du ein Mensch ", 1)
+    f = Fetcher(settings(), transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, headers={"content-type": "text/html"}, text=html)))
+    assert "data-adid" in (await f.get_page("/s-access-denied/k0")).text
+    assert f.cooldown_remaining == 0
     await f.aclose()
 
 
