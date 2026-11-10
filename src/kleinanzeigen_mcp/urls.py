@@ -78,10 +78,11 @@ class SearchQuery:
             segs.append(f"preis:{lo}:{hi}")
         if self.page and self.page > 1:
             segs.append(f"seite:{int(self.page)}")
-        if self.query:
-            segs.append(keyword_slug(self.query))
+        slug = keyword_slug(self.query) if self.query else ""
+        if slug:
+            segs.append(slug)
 
-        tail = "k0" if self.query else ""
+        tail = "k0" if slug else ""
         if self.category_id:
             tail += f"c{int(self.category_id)}"
         if self.location_id:

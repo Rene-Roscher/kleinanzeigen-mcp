@@ -14,9 +14,9 @@ import httpx
 from . import parser
 from .cache import AsyncTTLCache
 from .config import Settings, get_settings
-from .http import Fetcher, NotFoundError
+from .http import Fetcher, NotFoundError, PolicyError
 from .models import AdDetail, AdSummary, Category, Location, SearchResult, Seller, Sort
-from .urls import SearchQuery
+from .urls import SearchQuery, keyword_slug
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +43,9 @@ class KleinanzeigenClient:
     def __init__(self, settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None):
         self.s = settings or get_settings()
         self.fetcher = Fetcher(self.s, transport=transport)
-        self.cache = AsyncTTLCache(self.s.cache_max_entries, self.s.stale_max_age_s)
+        self.cache = AsyncTTLCache(
+            self.s.cache_max_entries, self.s.stale_max_age_s, no_stale_for=(NotFoundError, PolicyError)
+        )
         self._watches: OrderedDict[str, _Watch] = OrderedDict()
         self._watch_lock = asyncio.Lock()
         self._location_names: dict[str, str] = {}
@@ -88,46 +90,54 @@ class KleinanzeigenClient:
         limit: int | None = None,
     ) -> SearchResult:
         """Run a search. ``pages`` > 1 walks consecutive result pages (sequentially)."""
+        if q.query is not None and not keyword_slug(q.query):
+            q = SearchQuery(**{**_asdict(q), "query": None})  # blank / punctuation-only keyword
         if not q.query and not q.category_id and not q.location_id:
             raise ValueError("give at least a query, a category or a location")
         pages = max(1, min(MAX_PAGES, pages))
         wanted = q
         notes: list[str] = []
-        if self.s.robots_policy == "strict":
-            # robots.txt disallows filter URLs: fetch the plain listing, filter locally.
+        strict = self.s.robots_policy == "strict"
+        if strict:
+            # robots.txt disallows filter URLs: fetch the plain listing, filter/sort locally.
             q = SearchQuery(query=q.query, category_id=q.category_id, location_id=q.location_id,
                             sort=Sort.relevance, page=q.page)
-            if q.path() != SearchQuery(**{**_asdict(wanted), "sort": Sort.relevance}).path() or \
-                    wanted.sort != Sort.relevance:
-                notes.append("robots strict mode: sort/radius/price/seller/shipping filters applied "
-                             "locally on the fetched page(s); totals are unfiltered")
-        first, cached = await self._search_page(q)
-        ads = list(first.ads)
-        all_cached = cached
-        last = first
-        page = q.page
-        while pages > 1 and last.has_next_page and (limit is None or len(ads) < limit):
-            pages -= 1
-            page += 1
-            nq = SearchQuery(**{**_asdict(q), "page": page})
-            last, c = await self._search_page(nq)
-            all_cached = all_cached and c
-            ads.extend(last.ads)
+            notes.append("robots strict mode: price/seller/ad type/shipping filters and sorting were "
+                         "applied locally to the fetched page(s); results come from relevance order, "
+                         "totals are unfiltered")
+            if wanted.radius_km:
+                notes.append("robots strict mode: radius is not supported – searched the whole location")
 
         seen: set[str] = set()
         out: list[AdSummary] = []
-        for a in ads:
-            if a.id in seen or (not include_promoted and a.is_promoted):
-                continue
-            if q is not wanted and not _matches(a, wanted):
-                continue
-            seen.add(a.id)
-            out.append(a)
+
+        def take(ads: list[AdSummary]) -> None:
+            for a in ads:
+                if a.id in seen or (not include_promoted and a.is_promoted):
+                    continue
+                if strict and not _matches(a, wanted):
+                    continue
+                seen.add(a.id)
+                out.append(a)
+
+        first, all_cached = await self._search_page(q)
+        take(first.ads)
+        last, page = first, q.page
+        while pages > 1 and last.has_next_page and (limit is None or len(out) < limit):
+            pages -= 1
+            page += 1
+            last, c = await self._search_page(SearchQuery(**{**_asdict(q), "page": page}))
+            all_cached = all_cached and c
+            take(last.ads)
+
+        if strict and wanted.sort != Sort.relevance:
+            out = _sort_local(out, wanted.sort)
         if limit is not None:
             out = out[:limit]
         return first.model_copy(
             update={
                 "ads": out,
+                "page": q.page,
                 "has_next_page": last.has_next_page,
                 "cached": all_cached,
                 "location_name": self._location_names.get(str(q.location_id)) if q.location_id else None,
@@ -141,40 +151,54 @@ class KleinanzeigenClient:
         """Newest organic listings first (paid TOP/priority placements removed)."""
         q = SearchQuery(**{**_asdict(q), "sort": Sort.newest, "page": 1})
         res = await self.search(q, pages=pages, include_promoted=False)
-        ads = res.ads
+        ads = _sort_local(res.ads, Sort.newest)
         if max_age_minutes is not None:
             cutoff = datetime.now(parser.BERLIN) - timedelta(minutes=max_age_minutes)
             ads = [a for a in ads if a.posted_at is None or a.posted_at >= cutoff]
-        ads.sort(key=lambda a: (a.posted_at is not None, a.posted_at or datetime.min.replace(tzinfo=UTC),
-                                int(a.id)), reverse=True)
         if limit is not None:
             ads = ads[:limit]
         return res.model_copy(update={"ads": ads})
 
     async def check_watch(
-        self, watch_key: str, q: SearchQuery, *, emit_initial: bool = False, pages: int = 1
-    ) -> tuple[list[AdSummary], bool]:
-        """Return only ads not seen before for this watch. ``(new_ads, was_first_check)``.
+        self, watch_key: str, q: SearchQuery, *, emit_initial: bool = False, max_pages: int = MAX_PAGES
+    ) -> tuple[list[AdSummary], bool, bool]:
+        """Return only ads not seen before for this watch: ``(new_ads, first_check, possible_gap)``.
 
-        On the first check the current result set becomes the baseline; it is
-        returned only when ``emit_initial`` is set.
+        Pages through the newest listings until it reaches an ad it has already
+        seen, so nothing is missed between two checks unless more than
+        ``max_pages`` pages (~25 ads each) appeared – then ``possible_gap`` is True.
+        On the first check page 1 becomes the baseline (returned only with ``emit_initial``).
         """
-        res = await self.latest(q, limit=None, pages=pages)
+        base = SearchQuery(**{**_asdict(q), "sort": Sort.newest, "page": 1})
         async with self._watch_lock:
             w = self._watches.get(watch_key)
             first = w is None
-            if first:
+            seen = set(w.seen) if w else set()
+
+        collected: list[AdSummary] = []
+        possible_gap = False
+        for page in range(1, (1 if first else max_pages) + 1):
+            res = await self.search(SearchQuery(**{**_asdict(base), "page": page}), include_promoted=False)
+            collected.extend(res.ads)
+            if first or any(a.id in seen for a in res.ads) or not res.has_next_page:
+                break
+        else:
+            possible_gap = True
+
+        async with self._watch_lock:
+            w = self._watches.get(watch_key)
+            if w is None:
                 w = self._watches[watch_key] = _Watch()
                 while len(self._watches) > 1000:
                     self._watches.popitem(last=False)
-            assert w is not None
-            new = [a for a in res.ads if a.id not in w.seen]
-            w.remember([a.id for a in res.ads])
+            uniq = {a.id: a for a in collected}
+            new = _sort_local([a for a in uniq.values() if a.id not in w.seen], Sort.newest)
+            w.remember(list(uniq))
             w.last_check = time.time()
             self._watches.move_to_end(watch_key)
         if first and not emit_initial:
-            return [], True
-        return new, first
+            return [], True, False
+        return new, first, possible_gap
 
     def drop_watch(self, watch_key: str) -> bool:
         return self._watches.pop(watch_key, None) is not None
@@ -338,6 +362,18 @@ def normalize_ad_id(ad: str | int) -> str:
     if m := re.search(r"/s-anzeige/(\d{6,})", s):
         return m.group(1)
     raise ValueError(f"not an ad id or kleinanzeigen URL: {ad!r}")
+
+
+def _sort_local(ads: list[AdSummary], sort: Sort) -> list[AdSummary]:
+    if sort == Sort.newest:
+        return sorted(ads, key=lambda a: (a.posted_at is not None,
+                                          a.posted_at or datetime.min.replace(tzinfo=UTC), int(a.id)),
+                      reverse=True)
+    if sort in (Sort.price_asc, Sort.price_desc):
+        priced = [a for a in ads if a.price.amount_eur is not None]
+        rest = [a for a in ads if a.price.amount_eur is None]
+        return sorted(priced, key=lambda a: a.price.amount_eur, reverse=sort == Sort.price_desc) + rest
+    return ads
 
 
 def _matches(a: AdSummary, q: SearchQuery) -> bool:

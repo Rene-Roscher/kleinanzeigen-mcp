@@ -77,6 +77,7 @@ async def test_challenge_page_detected():
         await f.get_page("/")
     await f.aclose()
 
+
 async def test_search_for_access_denied_is_not_a_block(fixture):
     # regression: the keyword lands in <title>; a generic phrase must not trigger a cooldown
     html = fixture("search_new.html.gz").replace("<title>", "<title>Access Denied – bist du ein Mensch ", 1)
@@ -132,10 +133,10 @@ async def test_client_search_is_cached(fixture):
     assert r3.ads and not any(a.is_promoted for a in r3.ads)
     assert r3.ads == sorted(r3.ads, key=lambda a: a.posted_at, reverse=True)
 
-    new, first = await c.check_watch("w", q)
-    assert first and new == []
-    new, first = await c.check_watch("w", q)
-    assert not first and new == []
+    new, first, gap = await c.check_watch("w", q)
+    assert first and new == [] and not gap
+    new, first, gap = await c.check_watch("w", q)
+    assert not first and new == [] and not gap
     await c.aclose()
 
 
