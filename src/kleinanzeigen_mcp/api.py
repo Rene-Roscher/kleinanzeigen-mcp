@@ -39,6 +39,7 @@ class SearchParams(BaseModel):
 class WatchResult(BaseModel):
     watch: str
     first_check: bool
+    possible_gap: bool = False
     new_count: int
     ads: list[AdSummary]
 
@@ -189,7 +190,8 @@ def create_app(settings: Settings | None = None, client: KleinanzeigenClient | N
                           emit_initial: bool = True):
         q = await to_query(p)
         owner = request.scope.get("state", {}).get("token_name", "anonymous")
-        new, first = await get_client().check_watch(f"{owner}|{name}|{q.path()}", q, emit_initial=emit_initial)
-        return WatchResult(watch=name, first_check=first, new_count=len(new), ads=new)
+        new, first, gap = await get_client().check_watch(f"{owner}|{name}|{q.path()}", q,
+                                                         emit_initial=emit_initial)
+        return WatchResult(watch=name, first_check=first, possible_gap=gap, new_count=len(new), ads=new)
 
     return app

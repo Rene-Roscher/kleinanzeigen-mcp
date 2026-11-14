@@ -9,6 +9,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from .auth import current_token_name
 from .client import KleinanzeigenClient
 from .http import BlockedError, NotFoundError, PolicyError, UpstreamError
 from .models import AdType, SellerType, Sort
@@ -172,10 +173,14 @@ def build_mcp(get_client: Any) -> MCPServer:
             q = await _query(c, query=query, location=location, radius_km=radius_km, category=category,
                              price_min=price_min, price_max=price_max, seller_type=seller_type,
                              ad_type=ad_type, shipping=shipping, buy_now=False)
-            key = f"{watch_name}|{q.path()}"
-            new, first = await c.check_watch(key, q, emit_initial=emit_initial)
-            return {"watch": watch_name, "first_check": first, "new_count": len(new),
-                    "ads": [_dump(a) for a in new]}
+            key = f"{current_token_name.get()}|{watch_name}|{q.path()}"
+            new, first, gap = await c.check_watch(key, q, emit_initial=emit_initial)
+            out: dict[str, Any] = {"watch": watch_name, "first_check": first, "new_count": len(new),
+                                   "ads": [_dump(a) for a in new]}
+            if gap:
+                out["possible_gap"] = True
+                out["note"] = "more new ads appeared than 5 pages hold – check more often"
+            return out
         except Exception as e:
             raise _err(e) from e
 

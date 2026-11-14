@@ -7,12 +7,16 @@ import hmac
 import secrets
 import time
 from collections import deque
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 PUBLIC_PATHS = {"/health", "/"}
+
+# Name of the authenticated token for the current request (used to scope watches).
+current_token_name: ContextVar[str] = ContextVar("current_token_name", default="local")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,12 +95,16 @@ class AuthMiddleware:
 
         token: Token | None = None
         if self.tokens:
-            headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
+            headers = {
+                k.lower(): v.decode("latin-1")
+                for k, v in scope["headers"]
+                if k.lower() in (b"authorization", b"x-api-key")
+            }
             presented = None
-            auth = headers.get("authorization", "")
+            auth = headers.get(b"authorization", "")
             if auth.lower().startswith("bearer "):
                 presented = auth[7:].strip()
-            presented = presented or headers.get("x-api-key")
+            presented = presented or headers.get(b"x-api-key")
             token = self._check(presented)
             if token is None:
                 resp = JSONResponse(
@@ -117,5 +125,10 @@ class AuthMiddleware:
             await resp(scope, receive, send)
             return
 
-        scope.setdefault("state", {})["token_name"] = token.name if token else "anonymous"
-        await self.app(scope, receive, send)
+        name = token.name if token else "anonymous"
+        scope.setdefault("state", {})["token_name"] = name
+        reset = current_token_name.set(name)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            current_token_name.reset(reset)

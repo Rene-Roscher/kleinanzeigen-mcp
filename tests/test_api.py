@@ -86,3 +86,30 @@ def test_mcp_over_http(fixture):
         assert not res.get("isError"), res
         data = res.get("structuredContent") or json.loads(res["content"][0]["text"])
         assert len(data["ads"]) == 3
+
+
+def test_non_utf8_header_does_not_crash(fixture):
+    with TestClient(make(fixture)) as tc:
+        r = tc.get("/v1/status", headers={"Authorization": f"Bearer {TOKEN}", "X-Odd": "caf\xe9".encode("latin-1")})
+        assert r.status_code == 200
+
+
+def test_mcp_watches_are_scoped_per_token(fixture):
+    from kleinanzeigen_mcp.auth import hash_token  # noqa: F401
+    app = make(fixture)
+    with TestClient(app) as tc:
+        def call(token):
+            h = {"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream",
+                 "mcp-protocol-version": "2025-06-18"}
+            tc.post("/mcp", headers=h, json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                               "clientInfo": {"name": "t", "version": "1"}}})
+            r = tc.post("/mcp", headers=h, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "check_new_listings",
+                                   "arguments": {"watch_name": "same", "query": "iphone", "emit_initial": False}}})
+            res = r.json()["result"]
+            return res.get("structuredContent") or json.loads(res["content"][0]["text"])
+
+        assert call(TOKEN)["first_check"] is True
+        assert call(TOKEN)["first_check"] is False
+        assert call("other")["first_check"] is True  # bob has his own watch with the same name

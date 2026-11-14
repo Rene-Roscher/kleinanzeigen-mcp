@@ -45,9 +45,9 @@ class Settings(BaseSettings):
     # Sustained request rate to kleinanzeigen.de across *all* clients of this
     # server. A human clicking around does maybe one page every few seconds;
     # 0.5 rps with a small burst stays well inside that envelope.
-    rate_per_s: float = 0.5
-    burst: int = 4
-    max_concurrency: int = 2
+    rate_per_s: float = Field(0.5, gt=0)
+    burst: int = Field(4, ge=1)
+    max_concurrency: int = Field(2, ge=1)
     jitter_s: float = 0.4
     max_retries: int = 2
     cooldown_base_s: float = 60.0

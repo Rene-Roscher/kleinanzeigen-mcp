@@ -35,6 +35,36 @@ rendert jede Seite mit **Playwright/Chromium**. Laut README hat es keinen Cache 
 wartet es 2 s. Ein echter Browser ist sehr nah am „normalen User“, kostet aber pro Seite Sekunden und
 hunderte MB RAM. Hier reicht plain HTTP, weil die Daten ohnehin im HTML stecken.
 
+### Nachprüfung (zweite Runde)
+
+Ein unabhängiger Code-Review fand **9 Bugs**, die die Tests nicht abdeckten. Alle sind behoben und haben je einen
+Regressionstest (`tests/test_regressions.py`):
+
+| # | Bug | Auswirkung vorher |
+|---|---|---|
+| 1 | Ein abgebrochener Aufrufer brach den gemeinsamen Fetch für alle Wartenden ab | Parallele Agent-Calls schlugen grundlos fehl |
+| 2 | Stale-on-Error galt auch für „nicht gefunden“ | Gelöschte Anzeigen wurden bis zu 6 h weiter ausgeliefert |
+| 3 | „Access Denied“ im Seitentitel galt als Block | Eine Suche nach „access denied“ legte den Server 1–15 min lahm |
+| 4 | Strict-Modus ignorierte die Sortierung, der Radius fiel still weg | Falsch sortierte Ergebnisse, irreführender Hinweis |
+| 5 | MCP-Watches waren nicht pro Token getrennt | Zwei Nutzer „klauten“ sich gegenseitig neue Anzeigen |
+| 6 | Ein HTTP 500 wurde über alle Proxys wiederholt | 3 Proxys × 3 Versuche = 9 Requests für einen Fehler |
+| 7 | Header, die nicht UTF-8 sind, führten zum Absturz der Auth | HTTP 500 statt normaler Antwort |
+| 8 | Eine Query aus Leerzeichen oder Satzzeichen erzeugte eine kaputte URL | Falsche Suche oder 404 |
+| 9 | `limit` wurde vor dem Filtern gezählt | Zu wenige Ergebnisse |
+
+Dazu kamen kleinere Punkte: Ein Redirect ohne Restbudget liefert jetzt einen Fehler statt leerer Daten. Alle httpx-Fehler
+werden abgefangen. Ein wieder funktionierender Proxy wird reaktiviert. Nach einem Block startet die Session mit frischen
+Cookies. `#` in Proxy-Passwörtern bleibt erhalten. `rate_per_s=0` wird abgelehnt.
+
+Ein eigener Live-Test fand außerdem eine **Lücke in der Watch-Funktion**: Sie las nur Seite 1. Bei der Suche
+„iphone“ kamen in 3 Minuten **43** neue Anzeigen dazu, die alte Version hätte davon ungefähr 18 still verloren. Jetzt blättert
+die Watch bis zur ersten bekannten Anzeige (höchstens 5 Seiten) und meldet `possible_gap`, falls selbst das nicht reicht.
+
+Live-Datenprüfung danach: **20/20 Checks bestanden**. Geprüft wurden Preisfilter, chronologische Sortierung, nahtlose
+Paginierung, gleiche Titel/Preise/Verkäufer in Liste und Detailseite, privat/gewerblich/Gesuch, Umlaute und Sonderzeichen,
+Entfernungen ≤ Radius, Verkäufer-Paginierung, Kategorien und die Watch mit echten neuen Anzeigen. Dabei fielen 33 Requests
+an, 0 Blocks.
+
 ## 3. Wie wir „nicht geblockt werden“, und was bewusst fehlt
 
 **Umgesetzt:** Wir verhalten uns wie *eine* normale Browser-Session.

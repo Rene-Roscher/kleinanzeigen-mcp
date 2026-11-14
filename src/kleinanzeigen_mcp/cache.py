@@ -34,9 +34,15 @@ class CacheStats:
 
 
 class AsyncTTLCache:
-    def __init__(self, max_entries: int = 5000, stale_max_age: float = 0.0) -> None:
+    def __init__(
+        self,
+        max_entries: int = 5000,
+        stale_max_age: float = 0.0,
+        no_stale_for: tuple[type[BaseException], ...] = (),
+    ) -> None:
         self._data: OrderedDict[str, _Entry] = OrderedDict()
-        self._inflight: dict[str, asyncio.Future[Any]] = {}
+        self._inflight: dict[str, asyncio.Task[tuple[Any, bool]]] = {}
+        self._no_stale_for = no_stale_for
         self._max = max_entries
         self._stale_max_age = stale_max_age
         self.stats = CacheStats()
@@ -66,7 +72,12 @@ class AsyncTTLCache:
     async def get_or_load(
         self, key: str, ttl: float, loader: Callable[[], Awaitable[Any]]
     ) -> tuple[Any, bool]:
-        """Return ``(value, from_cache)``."""
+        """Return ``(value, from_cache)``.
+
+        The load runs in a detached task that every caller awaits through
+        ``shield``: a caller that gets cancelled (client hung up, timeout) does
+        not cancel the fetch for the others, and the result still lands in the cache.
+        """
         now = time.monotonic()
         entry = self._data.get(key)
         if entry and entry.expires_at > now:
@@ -74,30 +85,33 @@ class AsyncTTLCache:
             self.stats.hits += 1
             return entry.value, True
 
-        if (fut := self._inflight.get(key)) is not None:
+        task = self._inflight.get(key)
+        if task is not None:
             self.stats.coalesced += 1
-            return await asyncio.shield(fut), True
+            value, _fresh = await asyncio.shield(task)
+            return value, True
 
         self.stats.misses += 1
-        fut = asyncio.get_running_loop().create_future()
-        self._inflight[key] = fut
+        task = asyncio.get_running_loop().create_task(self._load(key, ttl, loader))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # never "unretrieved"
+        self._inflight[key] = task
+        value, fresh = await asyncio.shield(task)
+        return value, not fresh
+
+    async def _load(self, key: str, ttl: float, loader: Callable[[], Awaitable[Any]]) -> tuple[Any, bool]:
         try:
             value = await loader()
-        except asyncio.CancelledError:
-            fut.cancel()
-            raise
         except Exception as exc:
+            if isinstance(exc, self._no_stale_for):
+                self._data.pop(key, None)  # e.g. the ad was deleted: forget it
+                raise
             stale = self._data.get(key)
             if stale is not None and time.monotonic() - stale.stored_at <= self._stale_max_age:
                 self.stats.stale_served += 1
-                fut.set_result(stale.value)
-                return stale.value, True
-            fut.set_exception(exc)
-            fut.exception()  # mark retrieved so asyncio doesn't warn if nobody else awaits
+                return stale.value, False
             raise
         else:
             self.set(key, value, ttl)
-            fut.set_result(value)
-            return value, False
+            return value, True
         finally:
             self._inflight.pop(key, None)
