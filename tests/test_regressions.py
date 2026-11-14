@@ -191,3 +191,72 @@ async def test_mcp_zero_results_hint(fixture):
     data = res.structured_content
     assert data["count"] == 0 and "fewer" in data["hints"][0] and "words" in data["hints"][0]
     await c.aclose()
+
+
+async def test_frankfurt_prefers_the_city_with_districts():
+    payload = ('{"_0":"Deutschland","_7950":"Frankfurt (Oder) - Brandenburg","_4292":"Frankfurt am Main - Hessen",'
+               '"_4343":"West - Frankfurt am Main","_14055":"Sachsenhausen - Frankfurt am Main"}')
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, headers={"content-type": "application/json"}, text=payload)))
+    assert await c.location_id("Frankfurt") == "4292"
+    assert c._location_alts["4292"] == ["Frankfurt (Oder) - Brandenburg"]
+    await c.aclose()
+
+
+async def test_time_window_pages_until_complete(fixture):
+    from datetime import datetime, timedelta
+
+    from kleinanzeigen_mcp.parser import BERLIN
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(lambda r: html_resp("")))
+    now = datetime.now(BERLIN)
+    calls: list[int] = []
+
+    async def fake_search(q, *, pages=1, include_promoted=True, limit=None, exclude_terms=None):
+        calls.append(q.page)
+        ads = [AdSummary(id=str(q.page * 100 + i), url="u", title="x", price=Price(),
+                         posted_at=now - timedelta(minutes=(q.page - 1) * 50 + i * 2)) for i in range(25)]
+        from kleinanzeigen_mcp.models import SearchResult
+        return SearchResult(url="u", page=q.page, has_next_page=True, ads=ads, fetched_at=now)
+
+    c.search = fake_search  # type: ignore[method-assign]
+    res = await c.latest(SearchQuery(query="x"), max_age_minutes=120, limit=None)
+    assert calls == [1, 2, 3] and res.complete is True
+    assert all(a.posted_at >= now - timedelta(minutes=120) for a in res.ads) and len(res.ads) > 25
+    await c.aclose()
+
+
+def test_defect_skips_price_comparison_and_same_day_account():
+    from datetime import datetime
+
+    from kleinanzeigen_mcp import scoring
+    from kleinanzeigen_mcp.models import AdDetail, SellerSummary
+    from kleinanzeigen_mcp.parser import BERLIN
+    now = datetime(2026, 11, 14, 12, tzinfo=BERLIN)
+    d = AdDetail(id="1", url="u", title="iPhone 15 Pro", description="Rückglas gesprungen, funktioniert.",
+                 price=Price(amount_eur=240), attributes={"Zustand": "Defekt"}, images=["a", "b", "c"],
+                 posted_at=datetime(2026, 10, 22, tzinfo=BERLIN), fetched_at=now,
+                 seller=SellerSummary(active_since="22.10.2026"))
+    r = scoring.assess(d, median_eur=500, now=now)
+    assert r.price_vs_median is None and not any("Marktmedian" in x for x in r.reasons)
+    assert any("Preisvergleich entfällt" in h for h in r.hints)
+    assert any("am Tag der Anzeige erstellt" in x for x in r.reasons)
+
+
+async def test_category_filter_and_lookup_tolerate_umlauts(fixture):
+    from kleinanzeigen_mcp.mcp_server import build_mcp
+    html = fixture("categories.html.gz")
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(lambda r: html_resp(html)))
+    assert await c.category_id("fahrrad") == "217"
+    res = await build_mcp(lambda: c).call_tool("list_categories", {"filter": "fahrrad"})
+    assert any(x["id"] == "217" for x in res.structured_content["categories"])
+    await c.aclose()
+
+
+async def test_get_seller_by_ad(fixture):
+    from kleinanzeigen_mcp.mcp_server import build_mcp
+    pages = {"ad": fixture("ad_private.html.gz"), "seller": fixture("seller_private.html.gz")}
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(
+        lambda r: html_resp(pages["seller" if "bestandsliste" in r.url.path else "ad"])))
+    res = await build_mcp(lambda: c).call_tool("get_seller", {"ad": "3571224603"})
+    assert res.structured_content["profile"]["user_id"] == "166595111" and res.structured_content["ads"]
+    await c.aclose()

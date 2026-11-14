@@ -180,9 +180,14 @@ def assess(
     s = ad.seller
     desc = ad.description or ""
     price = ad.price.amount_eur
+    defect = "defekt" in (ad.attributes.get("Zustand") or "").lower() or bool(
+        re.search(r"\bdefe[c]?kt\b|\bkaputt\b", ad.title, re.I))
     ratio = round(price / median_eur, 2) if price and median_eur else None
 
-    # --- price vs market
+    # --- price vs market (not meaningful for defective items)
+    if defect and ratio is not None:
+        hints.append("Preisvergleich entfällt – defekter Artikel ist nicht mit intakten vergleichbar")
+        ratio = None
     if ratio is not None:
         if ratio < 0.5:
             add(30, f"Preis {int(round((1 - ratio) * 100))} % unter Marktmedian – zu gut um wahr zu sein?")
@@ -202,6 +207,16 @@ def assess(
         add(15, f"Konto relativ neu ({age} Tage)")
     elif age >= 3 * 365:
         add(-10, f"Konto seit {age // 365} Jahren aktiv")
+
+    # account created right when the ad went up
+    since = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", s.active_since or "")
+    if since and ad.posted_at:
+        try:
+            created = date(int(since.group(3)), int(since.group(2)), int(since.group(1)))
+            if abs((ad.posted_at.date() - created).days) <= 1:
+                add(15, "Konto am Tag der Anzeige erstellt")
+        except ValueError:
+            pass
 
     # the classic: fresh account + attractive price
     if age is not None and age <= 30 and ratio is not None and ratio <= 1.0:
@@ -267,8 +282,7 @@ def assess(
         hints.append(f"Titel nennt {max(t_gb)} GB, Beschreibung nur {sorted(d_gb)} GB – Angaben prüfen")
     if ad.price.negotiable:
         hints.append("Preis ist VB – Verhandlung möglich")
-    cond = (ad.attributes.get("Zustand") or "").lower()
-    if "defekt" in cond or re.search(r"\bdefe[c]?kt\b|\bkaputt\b", ad.title, re.I):
+    if defect:
         hints.append("Artikel laut Anzeige defekt – kein vergleichbares Angebot")
 
     # A trusted-looking account must not neutralise an implausible price completely –

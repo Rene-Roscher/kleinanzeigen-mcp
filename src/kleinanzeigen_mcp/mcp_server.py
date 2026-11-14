@@ -52,7 +52,9 @@ How kleinanzeigen search works (important for good queries):
   resolved place (`location_name`) – check it for ambiguous names such as Frankfurt.
 
 Interpreting results:
-- Prices are EUR; "VB" = negotiable, price may be just a placeholder. `posted` is Europe/Berlin.
+- Prices are EUR; "VB" = negotiable, price may be just a placeholder. `posted` is Europe/Berlin
+  and is the date the ad was last (re)published – sellers can bump old ads.
+- Commercial shops are included unless seller_type="private".
 - Promoted (paid) ads are hidden by default because they are often old.
 - Risk scores from find_deals/assess_listing are heuristics: relay the reasons, recommend
   pickup or "Sicher bezahlen", but never call a seller a scammer.
@@ -181,14 +183,18 @@ async def _search_hints(c: KleinanzeigenClient, res: SearchResult, category: str
     if not category and len(res.ads) >= 10:
         counts = Counter(a.category_id for a in res.ads if a.category_id)
         if counts and counts.most_common(1)[0][1] / len(res.ads) < 0.5:
-            try:
-                names = {cat.id: cat.name for cat in await c.categories()}
-            except Exception:
-                names = {}
+            names = await _category_names(c)
             top = ", ".join(f"{names.get(cid, cid)} ({n})" for cid, n in counts.most_common(4))
             hints.append(f"Results are spread over several categories: {top}. "
                          "Set `category` to narrow down.")
     return hints
+
+
+async def _category_names(c: KleinanzeigenClient) -> dict[str, str]:
+    try:
+        return {cat.id: cat.name for cat in await c.categories()}
+    except Exception:
+        return {}
 
 
 def _deal(d: Deal) -> dict[str, Any]:
@@ -290,14 +296,19 @@ def build_mcp(get_client: Any) -> MCPServer:
             hints = await _search_hints(c, res, category, query)
             if max_age_minutes and sort != "newest":
                 hints.append("max_age_minutes is only applied with sort='newest'.")
+            if res.location_alternatives:
+                hints.append(f"'{location}' resolved to {res.location_name}; other places with that name: "
+                             f"{', '.join(res.location_alternatives)} – pass the full name if you meant another.")
         except Exception as e:
             raise _err(e) from e
+        windowed = bool(max_age_minutes and sort == "newest")
         out: dict[str, Any] = {
-            "total": res.total,
+            "total": None if windowed else res.total,
             "location_name": res.location_name,
             "count": len(res.ads),
+            "complete": res.complete if windowed else None,
             "ads": [_ad(a, response_format) for a in res.ads],
-            "next_page": page + pages if res.has_next_page else None,
+            "next_page": None if windowed else (page + pages if res.has_next_page else None),
             "hints": hints + res.notes,
             "source_url": res.url,
         }
@@ -359,10 +370,15 @@ def build_mcp(get_client: Any) -> MCPServer:
         except Exception as e:
             raise _err(e) from e
         m = res.market
+        names = await _category_names(c)
         market = {k: v for k, v in {
             "median_eur": m.median_eur, "p25_eur": m.p25_eur, "p75_eur": m.p75_eur,
-            "sample_size": m.sample_size, "low_confidence": m.low_confidence or None,
-            "category_id": m.category_id, "category_breakdown": m.category_breakdown, "basis": m.basis,
+            "sample_size": m.sample_size, "low_confidence": m.low_confidence,
+            "category": f"{names.get(m.category_id, m.category_id)} ({m.category_id})" if m.category_id else None,
+            "category_breakdown": [{**b, "name": names.get(b["category_id"])} for b in m.category_breakdown],
+            "basis": f"{m.sample_size} {m.basis}",
+            "how_to_read": "Deals are the cheapest offers in the whole market below the median of the "
+                           "newest comparable offers, so many deals can sit below p25.",
         }.items() if v not in (None, [])}
         return _result({
             "market": market,
@@ -407,7 +423,7 @@ def build_mcp(get_client: Any) -> MCPServer:
             "seller": _dump(d.seller),
             "market": {k: v for k, v in {
                 "median_eur": m.median_eur, "sample_size": m.sample_size,
-                "low_confidence": m.low_confidence or None, "basis": m.basis,
+                "low_confidence": m.low_confidence, "basis": f"{m.sample_size} {m.basis}",
             }.items() if v is not None},
             "note": "Heuristik aus öffentlichen Signalen – kein Beweis.",
         })
@@ -421,6 +437,9 @@ def build_mcp(get_client: Any) -> MCPServer:
         ],
         include_views: Annotated[
             bool, Field(description="Also fetch the view counter (+1 request per ad).")
+        ] = False,
+        include_images: Annotated[
+            bool, Field(description="Return all image URLs (default: only the first + count).")
         ] = False,
     ) -> dict[str, Any]:
         """Full details of one or more listings: complete description, attributes (e.g. Zustand,
@@ -437,25 +456,47 @@ def build_mcp(get_client: Any) -> MCPServer:
                 items.append(r)
                 continue
             d = _dump(r)
-            d.pop("cached", None)
+            for k in ("cached", "fetched_at", "posted_at"):
+                d.pop(k, None)
             d["posted"] = _posted(r)
-            d.pop("posted_at", None)
+            d["url"] = _short_url(r.id)
+            imgs = d.pop("images", [])
+            d["photo_count"] = len(imgs)
+            if include_images:
+                d["images"] = imgs
+            elif imgs:
+                d["first_image"] = imgs[0]
             items.append(d)
         return _result({"listings": items})
 
     @mcp.tool(title="Kleinanzeigen: Verkäufer", annotations=_RO)
     async def get_seller(
-        user_id: Annotated[str, Field(description="Numeric seller id (`seller_id` from search results).")],
+        user_id: Annotated[
+            str | None, Field(description="Numeric seller id (`seller_id` from search results).")
+        ] = None,
+        ad: Annotated[
+            str | None, Field(description="Alternatively an ad id/URL – its seller is looked up.")
+        ] = None,
         page: Annotated[int, Field(description="Page of the seller's ads (25 each).", ge=1, le=20)] = 1,
     ) -> dict[str, Any]:
         """A seller's public profile (name, private/commercial, rating, badges, active since,
         response time) and their current listings.
 
-        Use to judge a seller or to see what else they offer. Commercial shops without a numeric
-        id cannot be looked up. Cached for 1 hour.
+        Use to judge a seller or to see what else they offer. Pass `user_id`, or `ad` to look up
+        the seller of a listing in one call. Commercial shops without a numeric id cannot be
+        looked up. Cached for 1 hour.
         """
+        c = get_client()
         try:
-            s = await get_client().get_seller(user_id, page=page)
+            if not user_id:
+                if not ad:
+                    raise ValueError("pass user_id or ad")
+                detail = await c.get_ad(ad)
+                user_id = detail.seller.user_id
+                if not user_id:
+                    raise ValueError(f"the seller of ad {detail.id} is a commercial shop without a public "
+                                     f"profile id; shop page: {detail.seller.shop_url or 'n/a'}")
+            s = await c.get_seller(user_id, page=page)
         except Exception as e:
             raise _err(e) from e
         return _result({
@@ -539,8 +580,10 @@ def build_mcp(get_client: Any) -> MCPServer:
         except Exception as e:
             raise _err(e) from e
         if filter:
-            f = filter.lower()
-            cats = [c for c in cats if f in c.name.lower() or f in c.slug]
+            from .client import _fold, _norm
+            f, fn, ff = filter.lower(), _norm(filter), _fold(filter)
+            cats = [c for c in cats if f in c.name.lower() or fn in _norm(c.name) or ff in _fold(c.name)
+                    or fn in _norm(c.slug)]
         return _result({"categories": [_dump(c) for c in cats]})
 
     return mcp

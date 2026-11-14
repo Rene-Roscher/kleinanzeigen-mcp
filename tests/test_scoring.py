@@ -101,8 +101,8 @@ def test_title_matching():
 
 
 async def test_find_deals_end_to_end(fixture):
-    pages = {"search": fixture("search_new.html.gz"), "ad": fixture("ad_private.html.gz"),
-             "seller": fixture("seller_private.html.gz")}
+    intact = fixture("ad_private.html.gz").replace("Defekt", "Gut")
+    pages = {"search": fixture("search_new.html.gz"), "ad": intact, "seller": fixture("seller_private.html.gz")}
 
     def handler(r: httpx.Request):
         kind = "ad" if r.url.path.startswith("/s-anzeige/") else (
@@ -131,3 +131,19 @@ def test_pick_category_prefers_the_item_over_bundles():
     cat, breakdown = scoring.pick_category(pcs + ram, ["32gb|2x16", "ddr5"])
     assert cat == "225"  # fewer ads, but the searched item itself
     assert {b["category_id"] for b in breakdown} == {"225", "228"}
+
+
+async def test_find_deals_drops_defective_items_after_check(fixture):
+    pages = {"search": fixture("search_new.html.gz"), "ad": fixture("ad_private.html.gz"),
+             "seller": fixture("seller_private.html.gz")}
+
+    def handler(r: httpx.Request):
+        kind = "ad" if r.url.path.startswith("/s-anzeige/") else (
+            "seller" if "bestandsliste" in r.url.path else "search")
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=pages[kind])
+
+    s = Settings(_env_file=None, rate_per_s=1000, burst=100, jitter_s=0, warmup=False)
+    c = KleinanzeigenClient(s, transport=httpx.MockTransport(handler))
+    res = await c.find_deals(SearchQuery(query="iphone"), check_top=2, limit=5)
+    assert res.excluded.get("defect_after_check", 0) >= 1 and res.best_low_risk_id is None
+    await c.aclose()

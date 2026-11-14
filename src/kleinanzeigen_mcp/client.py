@@ -62,6 +62,7 @@ class KleinanzeigenClient:
         self._watches: OrderedDict[str, _Watch] = OrderedDict()
         self._watch_lock = asyncio.Lock()
         self._location_names: dict[str, str] = {}
+        self._location_alts: dict[str, list[str]] = {}
 
     async def aclose(self) -> None:
         await self.fetcher.aclose()
@@ -161,6 +162,7 @@ class KleinanzeigenClient:
                 "has_next_page": last.has_next_page,
                 "cached": all_cached,
                 "location_name": self._location_names.get(str(q.location_id)) if q.location_id else None,
+                "location_alternatives": self._location_alts.get(str(q.location_id), []) if q.location_id else [],
                 "notes": notes,
             }
         )
@@ -171,14 +173,36 @@ class KleinanzeigenClient:
     ) -> SearchResult:
         """Newest listings first (paid TOP/priority placements removed unless asked for)."""
         q = SearchQuery(**{**_asdict(q), "sort": Sort.newest})
-        res = await self.search(q, pages=pages, include_promoted=include_promoted, exclude_terms=exclude_terms)
-        ads = _sort_local(res.ads, Sort.newest)
-        if max_age_minutes is not None:
-            cutoff = datetime.now(parser.BERLIN) - timedelta(minutes=max_age_minutes)
-            ads = [a for a in ads if a.posted_at is None or a.posted_at >= cutoff]
+        if max_age_minutes is None:
+            res = await self.search(q, pages=pages, include_promoted=include_promoted, exclude_terms=exclude_terms)
+            ads = _sort_local(res.ads, Sort.newest)
+            if limit is not None:
+                ads = ads[:limit]
+            return res.model_copy(update={"ads": ads})
+
+        # Time window: keep paging until we see an ad older than the cutoff (max MAX_PAGES),
+        # so the caller knows the list is complete.
+        cutoff = datetime.now(parser.BERLIN) - timedelta(minutes=max_age_minutes)
+        collected: dict[str, AdSummary] = {}
+        complete, res, page = False, None, q.page
+        for _ in range(MAX_PAGES):
+            res = await self.search(SearchQuery(**{**_asdict(q), "page": page}), include_promoted=True)
+            organic = [a for a in res.ads if not a.is_promoted]
+            for a in res.ads:
+                collected.setdefault(a.id, a)
+            if any(a.posted_at and a.posted_at < cutoff for a in organic) or not res.has_next_page:
+                complete = True
+                break
+            page += 1
+        assert res is not None
+        ads = [a for a in collected.values()
+               if (include_promoted or not a.is_promoted) and a.posted_at and a.posted_at >= cutoff
+               and (not exclude_terms or scoring.title_matches(a.title, None, exclude_terms))]
+        ads = _sort_local(ads, Sort.newest)
         if limit is not None:
             ads = ads[:limit]
-        return res.model_copy(update={"ads": ads})
+        return res.model_copy(update={"ads": ads, "complete": complete,
+                                      "has_next_page": not complete and res.has_next_page, "page": q.page})
 
     async def check_watch(
         self, watch_key: str, q: SearchQuery, *, emit_initial: bool = False, max_pages: int = MAX_PAGES
@@ -240,11 +264,19 @@ class KleinanzeigenClient:
         matches belong to – otherwise 'rtx 4090' would mix graphics cards with laptops and PCs.
         """
         sq = self._stats_query(q)
-        res = await self.search(sq, pages=pages)
         excl = [*scoring.DEFAULT_EXCLUDE, *(exclude or [])]
-        sample = [a for a in res.ads
-                  if a.ad_type == AdType.offer and scoring.title_matches(a.title, must_include, excl)]
-        desc = f"{len(res.ads)} Angebote für {sq.path()}"
+
+        def comparable(ads: list[AdSummary]) -> list[AdSummary]:
+            return [a for a in ads if a.ad_type == AdType.offer
+                    and scoring.title_matches(a.title, must_include, excl)
+                    and (not exclude or scoring.title_matches(a.description, None, exclude))]
+
+        res = await self.search(sq, pages=pages)
+        sample = comparable(res.ads)
+        if len(sample) < 30 and res.has_next_page and pages < MAX_PAGES:  # small sample → read more
+            res = await self.search(sq, pages=MAX_PAGES)
+            sample = comparable(res.ads)
+        desc = f"vergleichbare Angebote aus den {len(res.ads)} neuesten für {sq.path()}"
         if must_include:
             desc += f", Titel enthält {must_include}"
         cat = str(q.category_id) if q.category_id else None
@@ -311,6 +343,8 @@ class KleinanzeigenClient:
                 excluded["wanted"] += 1
             elif not scoring.title_matches(a.title, must_include, excl):
                 excluded["title_filter"] += 1
+            elif exclude and not scoring.title_matches(a.description, None, exclude):
+                excluded["teaser_filter"] = excluded.get("teaser_filter", 0) + 1
             elif stats.category_id and a.category_id and a.category_id != str(stats.category_id) \
                     and not q.category_id:
                 excluded["other_category"] = excluded.get("other_category", 0) + 1
@@ -335,9 +369,16 @@ class KleinanzeigenClient:
                 continue
             d.risk, d.seller = r[0], r[1].seller
             d.condition = r[1].attributes.get("Zustand")
+            hit = next((t for t in (exclude or []) if t.lower() in r[1].description.lower()), None)
+            if hit:
+                d.risk.hints.append(f"Beschreibung erwähnt '{hit}' – passt das Angebot wirklich?")
 
+        defect = [d for d in deals if d.risk and any("defekt" in h for h in d.risk.hints)]
+        if defect:
+            excluded["defect_after_check"] = len(defect)
+            deals = [d for d in deals if d not in defect]
         best = next((d.ad.id for d in deals if d.risk and d.risk.level == "low"
-                     and not any("defekt" in h for h in d.risk.hints)), None)
+                     and not any("Beschreibung erwähnt" in h for h in d.risk.hints)), None)
         return DealsResult(
             query=dq.path(),
             market=stats,
@@ -464,8 +505,21 @@ class KleinanzeigenClient:
         if not ranked:
             hint = ", ".join(x.name for x in found[:5]) or "none"
             raise ValueError(f"unknown location {query!r} (site suggested: {hint})")
-        best = ranked[0]
+        exact = [x for x in found if place(x.name) == nq]
+        # Several places start with the query ("Frankfurt (Oder)", "Frankfurt am Main"): prefer the one
+        # the site lists districts for ("West - Frankfurt am Main") – that is the big city.
+        cities = {place(x.name): x for x in found if place(x.name).startswith(nq)}
+        if not exact and len(cities) > 1:
+            def districts(x: Location) -> int:
+                own = x.name.split(" - ", 1)[0].strip()
+                return sum(1 for y in found if y.name.split(" - ", 1)[-1].strip() == own and y.id != x.id)
+            best = max(cities.values(), key=lambda x: (districts(x), -found.index(x)))
+        else:
+            best = ranked[0]
+        alternatives = [x.name for x in cities.values() if x.id != best.id
+                        and x.name.split(" - ", 1)[-1].strip() != best.name.split(" - ", 1)[0].strip()]
         self._location_names[best.id] = best.name
+        self._location_alts[best.id] = alternatives[:4]
         return best
 
     async def categories(self) -> list[Category]:
@@ -488,12 +542,12 @@ class KleinanzeigenClient:
         if c.isdigit():
             return c
         cats = await self.categories()
-        low, norm = c.lower(), _norm(c)
+        low, norm, fold = c.lower(), _norm(c), _fold(c)
         for pred in (lambda x: x.slug == low, lambda x: x.name.lower() == low, lambda x: _norm(x.name) == norm):
             if hit := next((x for x in cats if pred(x)), None):
                 return hit.id
-        for pred in (lambda x: _norm(x.name).startswith(norm),
-                     lambda x: norm in _norm(x.name) or norm in _norm(x.slug)):
+        for pred in (lambda x: _norm(x.name).startswith(norm) or _fold(x.name).startswith(fold),
+                     lambda x: norm in _norm(x.name) or norm in _norm(x.slug) or fold in _fold(x.name)):
             hits = {x.id: x for x in cats if pred(x)}
             if len(hits) == 1:
                 return next(iter(hits))
@@ -571,6 +625,14 @@ _UMLAUT = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower().translate(_UMLAUT))
+
+
+_FOLD = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss"})
+
+
+def _fold(s: str) -> str:
+    """'Fahrräder' → 'fahrrader' so that 'fahrrad' matches (ä→ae would give 'fahrraeder')."""
+    return re.sub(r"[^a-z0-9]", "", s.lower().translate(_FOLD))
 
 
 def _asdict(q: SearchQuery) -> dict:
