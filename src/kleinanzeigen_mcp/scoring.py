@@ -21,6 +21,15 @@ DEFAULT_EXCLUDE = (
 
 _GB_RE = re.compile(r"(\d{1,4})\s?gb\b", re.I)
 
+# Laptop memory: words sellers use plus part numbers that give it away even when they don't
+# (Samsung M425R… = DDR5 SO-DIMM, M471… = SO-DIMM, Dell/LPCAMM modules).
+LAPTOP_RAM = re.compile(r"so-?dimm|sodim|so\s+dimm|\bcamm|lpcamm|\bm425r|\bm471|laptop|notebook", re.I)
+LAPTOP_RAM_TERMS = {"sodimm", "so-dimm", "so dimm", "laptop", "notebook", "camm"}
+
+
+def wants_desktop_ram(exclude: list[str] | None) -> bool:
+    return any(t.lower() in LAPTOP_RAM_TERMS for t in exclude or ())
+
 
 # --------------------------------------------------------------- matching
 def title_matches(title: str, must_include: list[str] | None, exclude: list[str] | None) -> bool:
@@ -282,7 +291,7 @@ def assess(
         hints.append(f"Titel nennt {max(t_gb)} GB, Beschreibung nur {sorted(d_gb)} GB – Angaben prüfen")
     if ad.price.negotiable:
         hints.append("Preis ist VB – Verhandlung möglich")
-    if defect:
+    if defect and not any("defekt" in h for h in hints):
         hints.append("Artikel laut Anzeige defekt – kein vergleichbares Angebot")
 
     # A trusted-looking account must not neutralise an implausible price completely –

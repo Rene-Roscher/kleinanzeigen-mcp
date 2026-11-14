@@ -260,3 +260,38 @@ async def test_get_seller_by_ad(fixture):
     res = await build_mcp(lambda: c).call_tool("get_seller", {"ad": "3571224603"})
     assert res.structured_content["profile"]["user_id"] == "166595111" and res.structured_content["ads"]
     await c.aclose()
+
+
+async def test_exact_city_reports_no_district_alternatives():
+    payload = ('{"_0":"Deutschland","_9409":"Hamburg","_9446":"Wandsbek - Hamburg",'
+               '"_16436":"Hamburg-Nord - Hamburg","_12853":"Hamburg Barmbek - Hamburg-Nord"}')
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, headers={"content-type": "application/json"}, text=payload)))
+    assert await c.location_id("Hamburg") == "9409"
+    assert c._location_alts["9409"] == []
+    await c.aclose()
+
+
+def test_laptop_ram_detector():
+    from kleinanzeigen_mcp import scoring
+    for t in ["Samsung 32GB DDR5-5600 (M425R4GA3PB0)", "Dell 32GB CAMM RAM Modul", "32GB DDR5 SO-DIMM",
+              "16GB DDR5 SODIMM", "Crucial 32GB Laptop RAM"]:
+        assert scoring.LAPTOP_RAM.search(t), t
+    for t in ["Samsung 32GB DDR5 UDIMM M323R4GA3BB0", "Corsair Vengeance 2x16GB DDR5 6000", "G.Skill Trident Z5"]:
+        assert not scoring.LAPTOP_RAM.search(t), t
+    assert scoring.wants_desktop_ram(["SODIMM"]) and not scoring.wants_desktop_ram(["hülle"])
+
+
+async def test_exclude_terms_top_up_and_report(fixture):
+    pages = {1: fixture("search_new.html.gz"), 2: fixture("search_autos.html.gz")}
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(
+        lambda r: html_resp(pages[2 if "seite:2" in r.url.path else 1])))
+    res = await c.search(SearchQuery(query="x"), include_promoted=True, limit=25, exclude_terms=["iphone"])
+    assert len(res.ads) == 25 and not any("iphone" in a.title.lower() for a in res.ads)
+    assert any("exclude_terms removed" in n for n in res.notes)
+    await c.aclose()
+
+
+def test_html_entities_unescaped():
+    from kleinanzeigen_mcp.parser import clean
+    assert clean("16GB &#x2F; 32GB &amp; mehr") == "16GB / 32GB & mehr"

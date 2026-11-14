@@ -78,6 +78,23 @@ an, 0 Blocks.
   mit einzelner, glaubwürdiger Anzeige erkennt sie nicht. Fotos werden nicht gegen eine Bildersuche geprüft. Bei
   kleinen Stichproben (< 15) ist `market.low_confidence` gesetzt.
 
+### Agenten-Tauglichkeit (Blindtests)
+
+Ein frischer Agent bekam 6 typische Nutzeranfragen und sah nur, was ein MCP-Client sieht: Instructions,
+Tool-Beschreibungen und Schemas, keinen Code.
+
+| | Runde 1 (alte Tools) | Runde 2 (nach Redesign) |
+|---|---|---|
+| Tool-Calls für 6 Aufgaben | 15 | 11 |
+| Fehler/Retries | „Frankfurt“ → Frankfurt (Oder), `list_categories("fahrrad")` leer | keine |
+| Antwort einer Suche (27 Anzeigen) | ~7.500 Tokens | ~3.000 Tokens |
+| Selbsteinschätzung des Agenten | – | 8/10 |
+
+Die Punkte aus Runde 2 sind ebenfalls behoben und live nachgeprüft: Laptop-RAM wird an Teilenummern erkannt
+(M425…/M471…, CAMM), `exclude_terms` füllt das Ergebnis auf und meldet, wie viel es entfernt hat, bei Defekten
+liefert `assess_listing` Zustand und Beschreibungsauszug, und es gibt keine Hinweise mehr auf Stadtteile als „andere Orte“.
+Offen bleibt: Kleinanzeigen hat keine Unterkategorie „Rennräder“, Fahrradteile tauchen deshalb in Rad-Suchen auf.
+
 ## 3. Wie wir „nicht geblockt werden“, und was bewusst fehlt
 
 **Umgesetzt:** Wir verhalten uns wie *eine* normale Browser-Session.
