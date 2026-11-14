@@ -11,11 +11,24 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from . import parser
+from . import parser, scoring
 from .cache import AsyncTTLCache
 from .config import Settings, get_settings
 from .http import Fetcher, NotFoundError, PolicyError
-from .models import AdDetail, AdSummary, Category, Location, SearchResult, Seller, Sort
+from .models import (
+    AdDetail,
+    AdSummary,
+    AdType,
+    Category,
+    Deal,
+    DealsResult,
+    Location,
+    MarketStats,
+    RiskAssessment,
+    SearchResult,
+    Seller,
+    Sort,
+)
 from .urls import SearchQuery, keyword_slug
 
 log = logging.getLogger(__name__)
@@ -203,6 +216,143 @@ class KleinanzeigenClient:
     def drop_watch(self, watch_key: str) -> bool:
         return self._watches.pop(watch_key, None) is not None
 
+    # --------------------------------------------------------- deals / risk
+    def _stats_query(self, q: SearchQuery) -> SearchQuery:
+        # newest listings = current asking prices (relevance order skews towards old/promoted ads)
+        return SearchQuery(**{**_asdict(q), "sort": Sort.newest, "ad_type": AdType.offer, "page": 1,
+                              "price_min": None, "price_max": None})
+
+    async def market(
+        self, q: SearchQuery, *, must_include: list[str] | None = None, exclude: list[str] | None = None,
+        pages: int = 3,
+    ) -> tuple[MarketStats, list[AdSummary]]:
+        """Robust price statistics for comparable current offers (outliers trimmed).
+
+        Without an explicit category the comparison is restricted to the category most
+        matches belong to – otherwise 'rtx 4090' would mix graphics cards with laptops and PCs.
+        """
+        sq = self._stats_query(q)
+        res = await self.search(sq, pages=pages)
+        excl = [*scoring.DEFAULT_EXCLUDE, *(exclude or [])]
+        sample = [a for a in res.ads
+                  if a.ad_type == AdType.offer and scoring.title_matches(a.title, must_include, excl)]
+        desc = f"{len(res.ads)} Angebote für {sq.path()}"
+        if must_include:
+            desc += f", Titel enthält {must_include}"
+        cat = str(q.category_id) if q.category_id else None
+        breakdown: list[dict] = []
+        if not cat and sample:
+            terms = must_include or (q.query or "").split()
+            cat, breakdown = scoring.pick_category(sample, terms)
+            if cat:
+                matched = len(sample)
+                sample = [a for a in sample if a.category_id == cat]
+                desc += f", nur Kategorie {cat} (automatisch gewählt, {len(sample)} von {matched} Treffern)"
+        stats = scoring.market_stats(sample, desc)
+        stats.category_id = cat
+        stats.category_breakdown = breakdown
+        return stats, sample
+
+    async def _risk_for(self, ad_id: str, median: float | None) -> tuple[RiskAssessment, AdDetail]:
+        detail = await self.get_ad(ad_id)
+        seller = None
+        if detail.seller.user_id:
+            try:
+                seller = await self.get_seller(detail.seller.user_id)
+            except Exception as e:  # seller page is a bonus signal
+                log.info("seller %s not available for risk check: %s", detail.seller.user_id, e)
+        return scoring.assess(detail, median_eur=median, seller=seller), detail
+
+    async def find_deals(
+        self,
+        q: SearchQuery,
+        *,
+        must_include: list[str] | None = None,
+        exclude: list[str] | None = None,
+        check_top: int = 5,
+        limit: int = 15,
+        min_ratio: float = 0.3,
+        max_ratio: float = 1.0,
+        stats_pages: int = 3,
+        deal_pages: int = 2,
+    ) -> DealsResult:
+        """Cheapest realistic offers relative to the market median, top ones risk-checked."""
+        stats, sample = await self.market(q, must_include=must_include, exclude=exclude, pages=stats_pages)
+        if not stats.median_eur or stats.sample_size < 5:
+            raise ValueError(
+                f"too few comparable offers for a market price ({stats.sample_size}) – "
+                "broaden the query or relax must_include"
+            )
+        med = stats.median_eur
+        lo = max(q.price_min or 0, int(min_ratio * med))
+        hi = int(max_ratio * med + 0.999)
+        if q.price_max is not None:
+            hi = min(hi, q.price_max)
+        dq = SearchQuery(**{**_asdict(q), "sort": Sort.price_asc, "ad_type": AdType.offer, "page": 1,
+                            "price_min": lo, "price_max": hi, "category_id": stats.category_id or q.category_id})
+        res = await self.search(dq, pages=deal_pages)
+
+        excl = [*scoring.DEFAULT_EXCLUDE, *(exclude or [])]
+        excluded = {"title_filter": 0, "wanted": 0, "placeholder_price": 0, "out_of_range": 0}
+        cands: dict[str, AdSummary] = {}
+        for a in [*res.ads, *sample]:
+            if a.id in cands:
+                continue
+            amt = a.price.amount_eur
+            if a.ad_type != AdType.offer:
+                excluded["wanted"] += 1
+            elif not scoring.title_matches(a.title, must_include, excl):
+                excluded["title_filter"] += 1
+            elif stats.category_id and a.category_id and a.category_id != str(stats.category_id) \
+                    and not q.category_id:
+                excluded["other_category"] = excluded.get("other_category", 0) + 1
+            elif scoring.is_placeholder_price(amt, med):
+                excluded["placeholder_price"] += 1
+            elif not (lo <= (amt or 0) <= hi):
+                excluded["out_of_range"] += 1
+            else:
+                cands[a.id] = a
+        ordered = sorted(cands.values(), key=lambda a: (a.price.amount_eur or 0, a.id))[:limit]
+        deals = [
+            Deal(ad=a, price_vs_median=round(a.price.amount_eur / med, 2),
+                 savings_eur=round(med - a.price.amount_eur, 2))
+            for a in ordered
+        ]
+
+        top = deals[: max(0, check_top)]
+        results = await asyncio.gather(*(self._risk_for(d.ad.id, med) for d in top), return_exceptions=True)
+        for d, r in zip(top, results, strict=True):
+            if isinstance(r, BaseException):
+                log.info("risk check for %s failed: %s", d.ad.id, r)
+                continue
+            d.risk, d.seller = r[0], r[1].seller
+            d.condition = r[1].attributes.get("Zustand")
+
+        best = next((d.ad.id for d in deals if d.risk and d.risk.level == "low"
+                     and not any("defekt" in h for h in d.risk.hints)), None)
+        return DealsResult(
+            query=dq.path(),
+            market=stats,
+            deals=deals,
+            checked=sum(1 for d in deals if d.risk),
+            excluded=excluded,
+            best_low_risk_id=best,
+            fetched_at=datetime.now(UTC),
+        )
+
+    async def assess_listing(
+        self, ad: str, *, reference_query: str | None = None, must_include: list[str] | None = None,
+    ) -> dict:
+        """Risk check for one listing, compared against the market for similar offers."""
+        detail = await self.get_ad(ad)
+        ref = reference_query or _reference_from_title(detail.title)
+        stats, _ = await self.market(
+            SearchQuery(query=ref, category_id=detail.category_id), must_include=must_include
+        )
+        median = stats.median_eur if stats.sample_size >= 5 else None
+        risk, detail = await self._risk_for(detail.id, median)
+        return {"ad": detail, "market": stats, "risk": risk}
+
     # ----------------------------------------------------------- ad detail
     async def get_ad(self, ad: str, *, include_views: bool = False) -> AdDetail:
         ad_id = normalize_ad_id(ad)
@@ -362,6 +512,16 @@ def normalize_ad_id(ad: str | int) -> str:
     if m := re.search(r"/s-anzeige/(\d{6,})", s):
         return m.group(1)
     raise ValueError(f"not an ad id or kleinanzeigen URL: {ad!r}")
+
+
+_STOP = {"neu", "neuwertig", "top", "zustand", "verkaufe", "mit", "und", "für", "fuer", "ovp", "originalverpackt",
+         "inkl", "wie", "gebraucht", "sehr", "gut", "the", "a", "vb", "nur", "abholung", "versand"}
+
+
+def _reference_from_title(title: str) -> str:
+    """'Corsair Vengeance 32GB DDR5 6000 CL30 *NEU*' → 'corsair vengeance 32gb ddr5'."""
+    words = [w for w in re.findall(r"[a-zA-Z0-9äöüÄÖÜß.+-]+", title.lower()) if w not in _STOP and len(w) > 1]
+    return " ".join(words[:4]) or title
 
 
 def _sort_local(ads: list[AdSummary], sort: Sort) -> list[AdSummary]:

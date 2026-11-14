@@ -65,6 +65,19 @@ Paginierung, gleiche Titel/Preise/Verkäufer in Liste und Detailseite, privat/ge
 Entfernungen ≤ Radius, Verkäufer-Paginierung, Kategorien und die Watch mit echten neuen Anzeigen. Dabei fielen 33 Requests
 an, 0 Blocks.
 
+### Deals & Scam-Check (Live-Stichproben)
+
+- **Marktpreis:** DDR5 32 GB (Desktop) liegt bei 465 € Median. Ohne automatische Kategoriewahl wären es 2.149 € gewesen,
+  weil es mehr Mini-PCs mit „32GB DDR5“ im Titel gibt als RAM-Angebote. Die Kategorie, in der der Suchbegriff
+  im Titel am weitesten vorne steht, war in 5 von 5 Testsuchen die richtige (RAM, RTX 4090, iPhone, PS5, Rennrad).
+- **Treffer:** iPhone 15 Pro 256 GB für 240 € (47 % vom Median), Konto 23 Tage alt, keine Bewertung → **high (70)**.
+  RTX 4090 für 2.300 €, Konto 20 Tage alt, keine Bewertung → **medium**.
+- **Kein Fehlalarm:** Günstige Angebote von Konten mit 5 bis 15 Jahren Alter, TOP-Bewertung und Zuverlässigkeits-Badge
+  bleiben **low**, die Preisabweichung steht trotzdem in den Gründen.
+- **Grenzen:** Die Prüfung auf gekaperte Konten hat nur öffentliche Indizien (Anzeigen-Burst, Orts-Streuung). Echte Übernahmen
+  mit einzelner, glaubwürdiger Anzeige erkennt sie nicht. Fotos werden nicht gegen eine Bildersuche geprüft. Bei
+  kleinen Stichproben (< 15) ist `market.low_confidence` gesetzt.
+
 ## 3. Wie wir „nicht geblockt werden“, und was bewusst fehlt
 
 **Umgesetzt:** Wir verhalten uns wie *eine* normale Browser-Session.
@@ -95,7 +108,7 @@ sind die richtigen Hebel ein niedrigeres Tempo, längere TTLs und `KA_ROBOTS_POL
     Filter-URLs (`/preis:`, `/sortierung:`, `/anbieter:`, `/anzeige:`, `/versand:`, `/direktkaufen:`, Radius `r5…r200`).
   - Die Muster sehen nach SEO-Steuerung des Crawl-Budgets aus, nicht nach einem Scraping-Verbot. Trotzdem sind sie ein
     klares Signal des Betreibers.
-- Dieser Server läuft standardmäßig als **user-getriebener Agent** (`KA_ROBOTS_POLICY=off`): Jede Anfrage wird von einer
+- Dieser Server ignoriert robots.txt standardmäßig (`KA_ROBOTS_POLICY=off`, so gewünscht) und läuft als **user-getriebener Agent**: Jede Anfrage wird von einer
   konkreten Nutzerfrage ausgelöst, wie bei einem Browser. Mit **`KA_ROBOTS_POLICY=strict`** gehen nur Requests raus, die
   robots.txt erlaubt (live geladen, mit Google-Semantik geprüft). Preis, Anbieter, Versand und Sortierung werden dann lokal
   angewendet, `get_seller` und die Ortsauflösung über Namen sind gesperrt. Dafür ist die Datenqualität geringer: Es sind die

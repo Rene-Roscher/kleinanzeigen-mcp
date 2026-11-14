@@ -59,6 +59,15 @@ def absolute(url: str | None) -> str | None:
     return url if url.startswith("http") else BASE + url
 
 
+_AD_CAT_RE = re.compile(r"/\d{6,}-(\d+)-\d+")
+
+
+def category_from_url(url: str) -> str | None:
+    """``/s-anzeige/x/3562841376-278-4303`` → ``278`` (the ad's leaf category)."""
+    m = _AD_CAT_RE.search(url)
+    return m.group(1) if m else None
+
+
 def ad_id_from_url(url: str) -> str | None:
     m = _AD_ID_RE.search(url)
     return m.group(1) if m else None
@@ -176,6 +185,7 @@ def _ad_from_island(o: dict[str, Any], *, with_distance: bool) -> AdSummary | No
     return AdSummary(
         id=str(ad_id),
         url=BASE + link,
+        category_id=category_from_url(link),
         title=clean(o.get("title")),
         description=clean(o.get("description")),
         price=parse_price(o.get("price")),
@@ -258,6 +268,7 @@ def _ad_from_dom(art: LexborNode, *, with_distance: bool) -> AdSummary | None:
     return AdSummary(
         id=str(ad_id),
         url=BASE + href,
+        category_id=category_from_url(href),
         title=clean(title_n.text()) if title_n is not None else "",
         description=clean(desc_n.text()) if desc_n is not None else "",
         price=parse_price(price_n.text() if price_n is not None else "", old_n.text() if old_n else None),

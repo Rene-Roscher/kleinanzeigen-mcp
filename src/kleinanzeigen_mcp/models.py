@@ -36,6 +36,7 @@ class Price(BaseModel):
 class AdSummary(BaseModel):
     id: str
     url: str
+    category_id: str | None = Field(None, description="Leaf category of the ad (from its URL).")
     title: str
     description: str = Field("", description="Shortened teaser text from the result list.")
     price: Price
@@ -110,6 +111,58 @@ class Seller(BaseModel):
     profile: SellerSummary
     ads: list[AdSummary]
     cached: bool = False
+    fetched_at: datetime
+
+
+class MarketStats(BaseModel):
+    basis: str = Field(description="Which search the statistics are based on.")
+    category_id: str | None = Field(None, description="Category the comparison was restricted to.")
+    category_breakdown: list[dict] = Field(
+        default_factory=list,
+        description="Matches per category (count, median, title_position). If the auto-picked category "
+                    "is wrong, call again with `category` set.",
+    )
+    sample_size: int
+    low_confidence: bool = Field(False, description="True if fewer than 15 comparable offers.")
+    outliers_removed: int = 0
+    median_eur: float | None = None
+    mean_eur: float | None = None
+    p25_eur: float | None = None
+    p75_eur: float | None = None
+    min_eur: float | None = None
+    max_eur: float | None = None
+
+
+class RiskAssessment(BaseModel):
+    score: int = Field(description="0 (unauffällig) – 100 (sehr verdächtig). Heuristic, not a verdict.")
+    level: str = Field(description="low | medium | high")
+    price_vs_median: float | None = Field(None, description="price / market median, e.g. 0.8 = 20 % cheaper")
+    account_age_days: int | None = None
+    reasons: list[str] = Field(default_factory=list, description="Risk signals with their points.")
+    positives: list[str] = Field(default_factory=list, description="Trust signals with their points.")
+    hints: list[str] = Field(default_factory=list, description="Deal-quality notes, not scam signals.")
+
+
+class Deal(BaseModel):
+    ad: AdSummary
+    price_vs_median: float | None = None
+    savings_eur: float | None = Field(None, description="Market median minus price.")
+    risk: RiskAssessment | None = Field(None, description="Only for the top candidates (check_top).")
+    condition: str | None = Field(None, description="'Zustand' from the ad details, if checked.")
+    seller: SellerSummary | None = None
+
+
+class DealsResult(BaseModel):
+    query: str
+    market: MarketStats
+    deals: list[Deal]
+    checked: int = Field(description="How many deals got a full risk check.")
+    excluded: dict[str, int] = Field(default_factory=dict)
+    best_low_risk_id: str | None = Field(None, description="Cheapest checked deal with risk level 'low'.")
+    disclaimer: str = (
+        "Heuristische Einschätzung aus öffentlichen Signalen (Preis, Kontoalter, Bewertungen, Text). "
+        "Kein Beweis – im Zweifel nur Abholung mit Prüfung oder 'Sicher bezahlen' nutzen."
+    )
     fetched_at: datetime
 
 

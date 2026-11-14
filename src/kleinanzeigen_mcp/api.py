@@ -16,7 +16,18 @@ from .client import KleinanzeigenClient
 from .config import Settings, get_settings
 from .http import BlockedError, NotFoundError, PolicyError, UpstreamError
 from .mcp_server import build_mcp
-from .models import AdDetail, AdSummary, AdType, Category, Location, SearchResult, Seller, SellerType, Sort
+from .models import (
+    AdDetail,
+    AdSummary,
+    AdType,
+    Category,
+    DealsResult,
+    Location,
+    SearchResult,
+    Seller,
+    SellerType,
+    Sort,
+)
 from .urls import SearchQuery
 
 log = logging.getLogger(__name__)
@@ -171,6 +182,25 @@ def create_app(settings: Settings | None = None, client: KleinanzeigenClient | N
     @app.get("/v1/ads/{ad_id}", response_model=AdDetail, response_model_exclude_none=True)
     async def ad(ad_id: Annotated[str, Path(pattern=r"^\d{6,}$")], include_views: bool = False):
         return await get_client().get_ad(ad_id, include_views=include_views)
+
+    @app.get("/v1/deals", response_model=DealsResult, response_model_exclude_none=True)
+    async def deals(
+        p: Annotated[SearchParams, Query()],
+        must_include: Annotated[list[str] | None, Query()] = None,
+        exclude: Annotated[list[str] | None, Query()] = None,
+        check_top: Annotated[int, Query(ge=0, le=10)] = 5,
+        limit: Annotated[int, Query(ge=1, le=50)] = 15,
+        min_ratio: Annotated[float, Query(ge=0.05, le=1)] = 0.3,
+    ):
+        q = await to_query(p)
+        return await get_client().find_deals(q, must_include=must_include, exclude=exclude,
+                                             check_top=check_top, limit=limit, min_ratio=min_ratio)
+
+    @app.get("/v1/ads/{ad_id}/risk")
+    async def ad_risk(ad_id: Annotated[str, Path(pattern=r"^\d{6,}$")], reference_query: str | None = None,
+                      must_include: Annotated[list[str] | None, Query()] = None) -> dict[str, Any]:
+        r = await get_client().assess_listing(ad_id, reference_query=reference_query, must_include=must_include)
+        return {k: v.model_dump(mode="json", exclude_none=True) for k, v in r.items()}
 
     @app.get("/v1/sellers/{user_id}", response_model=Seller, response_model_exclude_none=True)
     async def seller(user_id: Annotated[str, Path(pattern=r"^\d+$")],

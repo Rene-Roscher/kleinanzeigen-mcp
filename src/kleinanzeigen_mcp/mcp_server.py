@@ -25,6 +25,12 @@ Typical flow:
 2. `get_listing` – full description, attributes, all images, seller profile for one ad.
 3. `get_seller` – a seller's profile and other ads (cached for an hour).
 4. `check_new_listings` – poll a saved search; returns only ads not seen before.
+5. `find_deals` – cheapest realistic offers vs. the market median, top ones scam-risk scored.
+   Pass `must_include` (e.g. ['32gb|2x16']) and `exclude` (e.g. ['sodimm','laptop']) so the
+   market price compares like with like. `assess_listing` scores a single ad.
+   Without `category` the comparison category is auto-picked (where the item itself is listed,
+   not bundles containing it); check `market.category_breakdown` and re-run with `category` if needed.
+   Risk scores are heuristics – always relay the reasons, never call a seller a scammer.
 
 All calls are cached and rate limited server-side, so repeating a call is cheap.
 Prices are EUR. `posted_at` is Europe/Berlin time. Promoted (paid TOP) ads can be
@@ -183,6 +189,75 @@ def build_mcp(get_client: Any) -> MCPServer:
             return out
         except Exception as e:
             raise _err(e) from e
+
+    @mcp.tool(annotations=_RO)
+    async def find_deals(
+        query: Annotated[str, Field(description="What you are looking for, e.g. 'ddr5 32gb'.")],
+        must_include: Annotated[
+            list[str] | None,
+            Field(description="Every entry must occur in the title; '|' separates alternatives, "
+                              "e.g. ['32gb|2x16', 'ddr5']. Use it to keep the market comparable."),
+        ] = None,
+        exclude: Annotated[
+            list[str] | None,
+            Field(description="Title substrings to drop, e.g. ['sodimm', 'laptop', 'gaming pc']. "
+                              "Wanted ads, 'Ankauf', 'defekt' etc. are always dropped."),
+        ] = None,
+        location: Loc = None,
+        radius_km: Radius = None,
+        category: Cat = None,
+        price_max: PMax = None,
+        seller_type: SellerT = None,
+        shipping: Ship = None,
+        check_top: Annotated[
+            int, Field(description="Risk-check the N cheapest (2 requests each).", ge=0, le=10)
+        ] = 5,
+        limit: Annotated[int, Field(description="Max deals to return.", ge=1, le=50)] = 15,
+        min_ratio: Annotated[float, Field(description="Ignore offers below this share of the median "
+                                                      "(placeholders like '1 € VB').", ge=0.05, le=1)] = 0.3,
+    ) -> dict[str, Any]:
+        """Cheapest realistic offers vs. the current market median, with a light scam-risk check.
+
+        Builds a market price from current comparable offers (outliers trimmed), then lists the
+        cheapest offers between min_ratio×median and the median. The top `check_top` get a risk score
+        (0-100) from account age, ratings/badges, price vs. market, the seller's other ads (possible
+        hijacked account) and red flags in the text (WhatsApp, PayPal F&F, 'nur Versand' …).
+        Takes ~20-40 s because of the polite upstream rate limit.
+        """
+        c = get_client()
+        try:
+            q = await _query(c, query=query, location=location, radius_km=radius_km, category=category,
+                             price_min=None, price_max=price_max, seller_type=seller_type, ad_type="offer",
+                             shipping=shipping, buy_now=False)
+            res = await c.find_deals(q, must_include=must_include, exclude=exclude, check_top=check_top,
+                                     limit=limit, min_ratio=min_ratio)
+            return _dump(res)
+        except Exception as e:
+            raise _err(e) from e
+
+    @mcp.tool(annotations=_RO)
+    async def assess_listing(
+        ad: Annotated[str, Field(description="Ad id or kleinanzeigen URL.")],
+        reference_query: Annotated[
+            str | None, Field(description="Search used for the market price; default: derived from the title.")
+        ] = None,
+        must_include: Annotated[list[str] | None, Field(description="Title terms for comparable offers.")] = None,
+    ) -> dict[str, Any]:
+        """Scam-risk check for one listing: score, reasons, trust signals, and price vs. market."""
+        try:
+            r = await get_client().assess_listing(ad, reference_query=reference_query, must_include=must_include)
+        except Exception as e:
+            raise _err(e) from e
+        d = r["ad"]
+        return {
+            "ad": {"id": d.id, "url": d.url, "title": d.title, "price": _dump(d.price),
+                   "location": d.location, "posted_at": d.posted_at.isoformat() if d.posted_at else None,
+                   "shipping": d.shipping, "images": len(d.images)},
+            "seller": _dump(d.seller),
+            "market": _dump(r["market"]),
+            "risk": _dump(r["risk"]),
+            "disclaimer": "Heuristik aus öffentlichen Signalen – kein Beweis.",
+        }
 
     @mcp.tool(annotations=_RO)
     async def get_listing(
