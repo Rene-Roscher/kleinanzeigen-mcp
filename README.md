@@ -11,20 +11,38 @@ gebaut für Claude Code, Claude Desktop und andere MCP-Clients.
 - **Sicher:** API-Tokens (auch nur als SHA-256-Hash speicherbar) und ein Rate-Limit pro Token.
 - **Optional mit Proxys:** HTTP, HTTPS, SOCKS5 und SOCKS5h. Jeder Proxy bekommt eine eigene Session.
 
-## Schnellstart
+## Schnellstart: in Claude Code wie ein `npx`-Server
+
+Voraussetzung ist [uv](https://docs.astral.sh/uv/). `uvx` ist das Python-Gegenstück zu `npx`.
 
 ```bash
-uv sync
-uv run kleinanzeigen-mcp search "ddr5 32gb" -l München -r 50 --price-max 200
+curl -LsSf https://astral.sh/uv/install.sh | sh     # oder: brew install uv
 ```
 
-### In Claude Code einbinden: lokal über stdio
+Einmal registrieren, danach startet Claude Code den Server bei jedem Start automatisch über stdio. Es gibt keinen Klon und
+keinen dauerhaft laufenden Prozess, und `-s user` macht ihn in allen Projekten verfügbar:
 
 ```bash
-claude mcp add kleinanzeigen -- uv run --directory /pfad/zu/kleinanzeigen-mcp kleinanzeigen-mcp
+claude mcp add -s user kleinanzeigen -- uvx --from git+ssh://git@github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp
 ```
 
-### In Claude Code einbinden: als Server über HTTP mit Token
+- **Privates Repo:** Für die SSH-URL brauchst du deinen GitHub-SSH-Key. Alternativ geht
+  `git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git`, wenn `git` per `gh auth login` oder Credential-Helper Zugriff hat.
+- **Erster Start:** dauert 10–20 s, weil uv die Abhängigkeiten lädt. Danach liegt alles im Cache und der Start dauert ca. 2 s.
+- **Update auf den neuesten Stand:** einmal `uvx --refresh --from git+ssh://git@github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp --help`.
+- **Prüfen:** In Claude Code `/mcp` aufrufen oder im Terminal `claude mcp list`. Danach z. B. fragen:
+  „Finde den günstigsten DDR5 32GB Desktop-RAM und prüf auf Scam.“
+
+**Mit lokalem Klon** (zum Entwickeln): Die `.mcp.json` im Repo registriert den Server automatisch, sobald du
+Claude Code im Projektordner startest.
+
+```bash
+git clone git@github.com:Rene-Roscher/kleinanzeigen-mcp.git && cd kleinanzeigen-mcp && uv sync
+uv run kleinanzeigen-mcp search "ddr5 32gb" -l München -r 50 --price-max 200   # Test im Terminal
+claude mcp add -s user kleinanzeigen -- uv run --directory "$PWD" kleinanzeigen-mcp  # global aus dem Klon
+```
+
+## Als zentraler Server (HTTP + Token)
 
 ```bash
 uv run kleinanzeigen-mcp gen-token claude-code   # gibt den Token und den KA_API_TOKENS-Eintrag aus

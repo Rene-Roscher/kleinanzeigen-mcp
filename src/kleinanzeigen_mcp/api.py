@@ -95,7 +95,7 @@ def create_app(settings: Settings | None = None, client: KleinanzeigenClient | N
 
     app = FastAPI(
         title="Kleinanzeigen API",
-        version="0.1.0",
+        version="0.2.0",
         description="Fresh Kleinanzeigen.de listings – cached, rate limited, token protected. "
         "MCP endpoint: /mcp (streamable HTTP).",
         lifespan=lifespan,

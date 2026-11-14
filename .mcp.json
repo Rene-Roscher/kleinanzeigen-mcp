@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kleinanzeigen": {
+      "command": "uv",
+      "args": ["run", "kleinanzeigen-mcp"]
+    }
+  }
+}
