@@ -101,8 +101,13 @@ class KleinanzeigenClient:
         pages: int = 1,
         include_promoted: bool = True,
         limit: int | None = None,
+        exclude_terms: list[str] | None = None,
     ) -> SearchResult:
-        """Run a search. ``pages`` > 1 walks consecutive result pages (sequentially)."""
+        """Run a search. ``pages`` > 1 walks consecutive result pages (sequentially).
+
+        ``exclude_terms`` drops ads whose title contains any of the strings – the site
+        itself has no minus operator ('iphone -hülle' is searched as 'iphone hülle').
+        """
         if q.query is not None and not keyword_slug(q.query):
             q = SearchQuery(**{**_asdict(q), "query": None})  # blank / punctuation-only keyword
         if not q.query and not q.category_id and not q.location_id:
@@ -129,6 +134,8 @@ class KleinanzeigenClient:
                 if a.id in seen or (not include_promoted and a.is_promoted):
                     continue
                 if strict and not _matches(a, wanted):
+                    continue
+                if exclude_terms and not scoring.title_matches(a.title, None, exclude_terms):
                     continue
                 seen.add(a.id)
                 out.append(a)
@@ -159,11 +166,12 @@ class KleinanzeigenClient:
         )
 
     async def latest(
-        self, q: SearchQuery, *, max_age_minutes: int | None = None, limit: int | None = 25, pages: int = 1
+        self, q: SearchQuery, *, max_age_minutes: int | None = None, limit: int | None = 25, pages: int = 1,
+        exclude_terms: list[str] | None = None, include_promoted: bool = False,
     ) -> SearchResult:
-        """Newest organic listings first (paid TOP/priority placements removed)."""
-        q = SearchQuery(**{**_asdict(q), "sort": Sort.newest, "page": 1})
-        res = await self.search(q, pages=pages, include_promoted=False)
+        """Newest listings first (paid TOP/priority placements removed unless asked for)."""
+        q = SearchQuery(**{**_asdict(q), "sort": Sort.newest})
+        res = await self.search(q, pages=pages, include_promoted=include_promoted, exclude_terms=exclude_terms)
         ads = _sort_local(res.ads, Sort.newest)
         if max_age_minutes is not None:
             cutoff = datetime.now(parser.BERLIN) - timedelta(minutes=max_age_minutes)
@@ -469,24 +477,30 @@ class KleinanzeigenClient:
         return cats
 
     async def category_id(self, category: str | int | None) -> str | None:
-        """Accept a numeric id, a slug (``handy-telekom``) or a (partial) German name."""
+        """Accept a numeric id, a slug (``handy-telekom``) or a German name.
+
+        Exact matches win; a partial name is only accepted if it is unambiguous – 'Möbel'
+        must not silently become 'Kinderzimmermöbel'.
+        """
         if category is None or str(category).strip() == "":
             return None
         c = str(category).strip()
         if c.isdigit():
             return c
         cats = await self.categories()
-        low = c.lower()
-        for pred in (
-            lambda x: x.slug == low,
-            lambda x: x.name.lower() == low,
-            lambda x: low in x.name.lower(),
-            lambda x: low in x.slug,
-        ):
-            hit = next((x for x in cats if pred(x)), None)
-            if hit:
+        low, norm = c.lower(), _norm(c)
+        for pred in (lambda x: x.slug == low, lambda x: x.name.lower() == low, lambda x: _norm(x.name) == norm):
+            if hit := next((x for x in cats if pred(x)), None):
                 return hit.id
-        raise ValueError(f"unknown category {c!r} – use list_categories")
+        for pred in (lambda x: _norm(x.name).startswith(norm),
+                     lambda x: norm in _norm(x.name) or norm in _norm(x.slug)):
+            hits = {x.id: x for x in cats if pred(x)}
+            if len(hits) == 1:
+                return next(iter(hits))
+            if len(hits) > 1:
+                opts = ", ".join(f"'{x.name}' ({x.id})" for x in list(hits.values())[:8])
+                raise ValueError(f"ambiguous category {c!r} – pick one: {opts}")
+        raise ValueError(f"unknown category {c!r} – use list_categories(filter=...) to find the name")
 
     def status(self) -> dict:
         st = self.cache.stats

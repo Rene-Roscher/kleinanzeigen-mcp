@@ -58,20 +58,23 @@ docker compose up -d --build
 
 ## MCP-Tools
 
-| Tool | Zweck |
+| Tool | Wann |
 |---|---|
-| `search_listings` | Suche mit Filtern: Ort/PLZ + Radius, Kategorie (Name oder ID), Preis, privat/gewerblich, Angebot/Gesuch, Versand, „Direkt kaufen“, Sortierung, bis zu 5 Seiten |
-| `latest_listings` | Neueste organische Anzeigen ohne bezahlte TOP-Platzierungen, optional `max_age_minutes` |
-| `check_new_listings` | Gespeicherte Suche abfragen: liefert nur Anzeigen, die diese Watch noch nicht gesehen hat |
-| `find_deals` | **Günstigste realistische Angebote** im Vergleich zum aktuellen Marktmedian. Die Top-Kandidaten bekommen einen Scam-Risiko-Score |
-| `assess_listing` | Scam-Risiko einer einzelnen Anzeige, inklusive Preisvergleich mit ähnlichen Angeboten |
-| `get_listing` / `get_listings` | Volle Details: Beschreibung, Attribute, alle Bilder, Koordinaten, Versand, Verkäufer, optional Aufrufe |
-| `get_seller` | Verkäuferprofil (Bewertung, Badges, aktiv seit, Antwortzeit) und seine Anzeigen, 1 h gecacht |
-| `find_location` | Ort oder PLZ in eine Kleinanzeigen-Location-ID auflösen |
-| `list_categories` | Kategoriebaum mit IDs |
-| `service_status` | Cache, Rate-Limit und Zustand der Upstream-Sessions |
+| `search_listings` | Anzeigen suchen und durchstöbern, Standard: neueste zuerst. Filter: Ort/PLZ + Radius, Kategorie (Name oder ID), Preis, privat/gewerblich, Angebot/Gesuch, Versand, „Direkt kaufen“, `max_age_minutes`, `exclude_terms`. Paginierung über `next_page` |
+| `find_deals` | „Günstigstes / bester Preis / lohnt sich das?“: Marktpreis plus günstigste realistische Angebote plus Scam-Check |
+| `assess_listing` | „Ist diese Anzeige seriös?“ für eine einzelne Anzeige |
+| `get_listing` | Volle Details zu 1–20 Anzeigen in einem Aufruf |
+| `get_seller` | Verkäuferprofil und seine weiteren Anzeigen |
+| `check_new_listings` | Gespeicherte Suche: liefert nur Anzeigen, die noch nicht gemeldet wurden (getrennt pro Token) |
+| `find_location` / `list_categories` | Nur zur Klärung von Mehrdeutigkeiten, die Suchtools verstehen Orts- und Kategorienamen direkt |
 
-Jede Ergebnis-Anzeige enthält schon `seller_id` und `seller_type`. Um Verkäufer zu filtern, ist also kein Extra-Request nötig.
+**Für Agenten gebaut:**
+- **Server-Instructions mit den Suchregeln von Kleinanzeigen:** deutsche Begriffe verwenden, alle Wörter müssen vorkommen, kein ODER, kein Minus, keine Phrasensuche. Allgemeine Begriffe treffen auch Beschreibungen und brauchen deshalb eine Kategorie.
+- **Kompakte Antworten:** Standard ist `response_format="concise"` (ca. 60 % weniger Tokens). `"detailed"` liefert alle Felder.
+- **Hinweise in der Antwort:** bei 0 Treffern („weniger Wörter …“), bei Treffern aus vielen Kategorien (mit Kategorienamen) sowie der aufgelöste Ort (`location_name`).
+- **Fehler mit Lösungsweg:** z. B. eine mehrdeutige Kategorie mit Auswahl, ein unbekannter Ort mit Vorschlägen, Rate-Limit mit Wartezeit.
+
+Jede Ergebnis-Anzeige enthält `seller_id` und `seller`. Um nach Verkäufern zu filtern, ist also kein Extra-Request nötig.
 
 ## Deals & Scam-Check
 

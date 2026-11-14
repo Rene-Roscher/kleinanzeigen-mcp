@@ -76,15 +76,21 @@ def test_mcp_over_http(fixture):
         r = tc.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
                     headers={**h, "mcp-protocol-version": "2025-06-18"})
         names = {t["name"] for t in r.json()["result"]["tools"]}
-        assert {"search_listings", "latest_listings", "get_listing", "get_seller",
-                "check_new_listings", "find_location", "list_categories"} <= names
+        assert names == {"search_listings", "find_deals", "assess_listing", "get_listing", "get_seller",
+                         "check_new_listings", "find_location", "list_categories"}
         r = tc.post("/mcp", json={"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                  "params": {"name": "latest_listings",
-                                             "arguments": {"query": "iphone", "limit": 3}}},
+                                  "params": {"name": "search_listings",
+                                             "arguments": {"query": "iphone", "limit": 3,
+                                                           "exclude_terms": ["defekt"]}}},
                     headers={**h, "mcp-protocol-version": "2025-06-18"})
         res = r.json()["result"]
         assert not res.get("isError"), res
-        data = res.get("structuredContent") or json.loads(res["content"][0]["text"])
+        text = res["content"][0]["text"]
+        assert "\n" not in text and "\\u00" not in text  # compact JSON, umlauts not escaped
+        data = json.loads(text)
+        assert all("defekt" not in a["title"].lower() for a in data["ads"])
+        assert data["ads"][0]["url"].startswith("https://www.kleinanzeigen.de/s-anzeige/")
+        assert "image_url" not in data["ads"][0]  # concise by default
         assert len(data["ads"]) == 3
 
 

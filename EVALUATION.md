@@ -12,7 +12,7 @@ Stand: 14.11.2026. Alle Zahlen sind live gegen kleinanzeigen.de gemessen, aus ei
 | **Detail- und Verkäuferseiten sind noch JSP** (`viewad-*`, `aditem`) | Diese Seiten parsen wir per DOM. Der Parser kann beide Markups. |
 | Der Cookie `__ka-ls` merkt sich die letzte Suche bzw. den Ort | Er verfälscht spätere Seiten und wird nach jedem Request verworfen. |
 | Ohne Keyword wird das letzte Pfadsegment als Keyword gelesen | Bei Suchen ohne Keyword fällt deshalb das `k0` im URL-Ende weg (über die Redirects von `/s-suchanfrage.html` verifiziert). |
-| Die Standard-Sortierung ist „Relevanz“ | Für „aktuellste“ Anzeigen muss explizit `sortierung:neuste` gesetzt werden. TOP-Anzeigen stehen trotzdem oben und können Wochen alt sein. `latest_listings` filtert sie heraus. |
+| Die Standard-Sortierung ist „Relevanz“ | Für „aktuellste“ Anzeigen muss explizit `sortierung:neuste` gesetzt werden. TOP-Anzeigen stehen trotzdem oben und können Wochen alt sein. `search_listings` blendet sie standardmäßig aus. |
 | Gelöschte Anzeigen leiten per 301 auf die Kategorie um | Der Server erkennt das und gibt `404` bzw. „Not found“ zurück. |
 | Detailseiten enthalten teils die **volle Telefonnummer** im HTML | Der Parser liest sie bewusst nicht aus (Datenschutz). In den Fixtures ist sie geschwärzt. |
 
@@ -122,7 +122,7 @@ sind die richtigen Hebel ein niedrigeres Tempo, längere TTLs und `KA_ROBOTS_POL
 1. **Eine Instanz zentral betreiben**, damit sich alle Agenten einen Cache und ein Rate-Limit teilen. Mehrere
    Instanzen würden das Tempo multiplizieren.
 2. Das Tempo bei 0,5–1 req/s lassen. Für Agenten fühlt sich das dank Cache trotzdem schnell an.
-3. `/v1/status` bzw. `service_status` beobachten: steigt `blocks` über 0, das Tempo senken.
+3. `/v1/status` beobachten: steigt `blocks` über 0, das Tempo senken.
 4. `uv run pytest -m live` z. B. täglich laufen lassen. Kleinanzeigen fährt gerade zwei Frontends parallel und A/B-Tests,
    Markup-Änderungen sind wahrscheinlich.
 5. Ausbauoptionen: persistenter Cache (SQLite/Redis) für mehrere Instanzen; Watches persistieren (aktuell im RAM, gehen
