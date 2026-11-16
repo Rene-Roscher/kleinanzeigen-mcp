@@ -169,3 +169,25 @@ async def test_watch_pages_until_known_ad():
     new, first, gap = await c.check_watch("w", SearchQuery(query="x"))
     assert gap
     await c.aclose()
+
+
+async def test_ambiguous_category_is_an_error_not_a_guess(fixture):
+    html = fixture("categories.html.gz")
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(lambda r: html_resp(html)))
+    with pytest.raises(ValueError, match="ambiguous category"):
+        await c.category_id("möbel")
+    assert await c.category_id("Haushaltsgeräte") == "176"
+    assert await c.category_id("haushaltsgeraete") == "176"
+    assert await c.category_id("handy-telekom") == "173"
+    await c.aclose()
+
+
+async def test_mcp_zero_results_hint(fixture):
+    from kleinanzeigen_mcp.mcp_server import build_mcp
+
+    c = KleinanzeigenClient(settings(), transport=httpx.MockTransport(lambda r: html_resp("<html></html>")))
+    mcp = build_mcp(lambda: c)
+    res = await mcp.call_tool("search_listings", {"query": "sehr lange spezielle suche mit vielen wörtern"})
+    data = res.structured_content
+    assert data["count"] == 0 and "fewer" in data["hints"][0] and "words" in data["hints"][0]
+    await c.aclose()
