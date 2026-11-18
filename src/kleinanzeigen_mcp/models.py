@@ -61,6 +61,8 @@ class AdSummary(BaseModel):
 class SearchResult(BaseModel):
     url: str
     location_name: str | None = Field(None, description="How the location filter was resolved.")
+    location_alternatives: list[str] = Field(default_factory=list)
+    complete: bool | None = Field(None, description="With a time window: all ads in the window were read.")
     total: int | None = Field(None, description="Total hits reported by Kleinanzeigen.")
     page: int
     has_next_page: bool
