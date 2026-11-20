@@ -50,6 +50,8 @@ _AD_ID_RE = re.compile(r"/(\d{6,})-\d+-\d+")
 def clean(s: str | None) -> str:
     if not s:
         return ""
+    if "&" in s:
+        s = htmllib.unescape(s)  # '&#x2F;' etc. inside island JSON strings
     return _WS.sub(" ", s.replace("​", "").replace("\xa0", " ")).strip()
 
 
