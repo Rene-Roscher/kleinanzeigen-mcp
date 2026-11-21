@@ -55,6 +55,10 @@ Interpreting results:
 - Prices are EUR; "VB" = negotiable, price may be just a placeholder. `posted` is Europe/Berlin
   and is the date the ad was last (re)published – sellers can bump old ads.
 - Commercial shops are included unless seller_type="private".
+- Model families overlap: "iphone 15 pro" also matches "15 Pro Max" – exclude with exclude_terms.
+- With max_age_minutes, `complete: true` means every ad in that time window was read.
+- exclude_terms is applied after fetching; the response says how many ads it removed and
+  fetches up to 2 extra pages to fill the result.
 - Promoted (paid) ads are hidden by default because they are often old.
 - Risk scores from find_deals/assess_listing are heuristics: relay the reasons, recommend
   pickup or "Sicher bezahlen", but never call a seller a scammer.
@@ -72,7 +76,9 @@ Query = Annotated[
 ]
 Exclude = Annotated[
     list[str] | None,
-    Field(description="Drop ads whose TITLE contains any of these, e.g. ['hülle', 'defekt', 'tausch']."),
+    Field(description="Drop ads whose TITLE contains any of these (case-insensitive substring: 'hülle' also "
+                      "drops 'Schutzhülle', 'gabel' also drops 'Carbongabel'), e.g. ['hülle', 'defekt']. "
+                      "For 'iphone 15 pro' add 'max' to drop Pro Max models."),
 ]
 Loc = Annotated[str | None, Field(description="City, district or 5-digit PLZ, e.g. 'Berlin', '80331'.")]
 Radius = Annotated[
@@ -357,7 +363,8 @@ def build_mcp(get_client: Any) -> MCPServer:
         WhatsApp/PayPal-F&F/prepayment in text, photos). Takes 20-40 s.
 
         Make the comparison like-for-like with must_include/exclude_terms (e.g. desktop RAM:
-        must_include ['32gb|2x16'], exclude_terms ['sodimm', 'laptop']). Check `market.sample_size`,
+        must_include ['32gb|2x16'], exclude_terms ['sodimm', 'laptop'] – this also drops laptop RAM
+        recognised by part number such as Samsung M425…/M471… or CAMM modules). Check `market.sample_size`,
         `market.low_confidence` and `market.category_breakdown`; re-run with `category` if the
         auto-picked category is wrong. `best_low_risk_id` = cheapest checked deal with low risk.
         """
@@ -421,6 +428,8 @@ def build_mcp(get_client: Any) -> MCPServer:
                 "trust": risk.positives, "hints": risk.hints,
             }.items() if v not in (None, [])},
             "seller": _dump(d.seller),
+            "condition": d.attributes.get("Zustand"),
+            "description_excerpt": (d.description[:400] + "…") if len(d.description) > 400 else d.description,
             "market": {k: v for k, v in {
                 "median_eur": m.median_eur, "sample_size": m.sample_size,
                 "low_confidence": m.low_confidence, "basis": f"{m.sample_size} {m.basis}",

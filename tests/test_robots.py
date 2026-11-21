@@ -46,7 +46,8 @@ async def test_strict_mode_filters_locally(fixture):
     s = Settings(_env_file=None, rate_per_s=1000, burst=100, jitter_s=0, warmup=False, robots_policy="strict")
     c = KleinanzeigenClient(s, transport=httpx.MockTransport(handler))
     res = await c.search(SearchQuery(query="iphone", price_max=50, seller_type=SellerType.private))
-    assert paths == ["/robots.txt", "/s-iphone/k0"]
+    assert paths[:2] == ["/robots.txt", "/s-iphone/k0"]  # then up to 2 extra pages to fill the result
+    assert all("preis:" not in p and "anbieter:" not in p for p in paths)
     assert res.ads and all(a.price.amount_eur <= 50 and a.seller_type == SellerType.private for a in res.ads)
     assert res.notes
     with pytest.raises(PolicyError):

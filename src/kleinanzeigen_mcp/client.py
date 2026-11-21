@@ -142,14 +142,26 @@ class KleinanzeigenClient:
                 out.append(a)
 
         first, all_cached = await self._search_page(q)
+        raw = len(first.ads)
         take(first.ads)
         last, page = first, q.page
-        while pages > 1 and last.has_next_page and (limit is None or len(out) < limit):
-            pages -= 1
+        # local filters (exclude_terms, strict mode) may shrink a page: read up to 2 extra pages to fill it
+        extra = 2 if (exclude_terms or strict) else 0
+        want = limit or 25 * pages
+        while last.has_next_page and ((pages > 1 and (limit is None or len(out) < limit))
+                                      or (extra > 0 and len(out) < want)):
+            if pages > 1:
+                pages -= 1
+            else:
+                extra -= 1
             page += 1
             last, c = await self._search_page(SearchQuery(**{**_asdict(q), "page": page}))
             all_cached = all_cached and c
+            raw += len(last.ads)
             take(last.ads)
+        if exclude_terms:
+            notes.append(f"exclude_terms removed {raw - len(out)} of {raw} fetched ads "
+                         "(title substring match; 'total' is before exclusion)")
 
         if strict and wanted.sort != Sort.relevance:
             out = _sort_local(out, wanted.sort)
@@ -269,7 +281,9 @@ class KleinanzeigenClient:
         def comparable(ads: list[AdSummary]) -> list[AdSummary]:
             return [a for a in ads if a.ad_type == AdType.offer
                     and scoring.title_matches(a.title, must_include, excl)
-                    and (not exclude or scoring.title_matches(a.description, None, exclude))]
+                    and (not exclude or scoring.title_matches(a.description, None, exclude))
+                    and not (scoring.wants_desktop_ram(exclude)
+                             and scoring.LAPTOP_RAM.search(f"{a.title} {a.description}"))]
 
         res = await self.search(sq, pages=pages)
         sample = comparable(res.ads)
@@ -345,6 +359,8 @@ class KleinanzeigenClient:
                 excluded["title_filter"] += 1
             elif exclude and not scoring.title_matches(a.description, None, exclude):
                 excluded["teaser_filter"] = excluded.get("teaser_filter", 0) + 1
+            elif scoring.wants_desktop_ram(exclude) and scoring.LAPTOP_RAM.search(f"{a.title} {a.description}"):
+                excluded["laptop_ram"] = excluded.get("laptop_ram", 0) + 1
             elif stats.category_id and a.category_id and a.category_id != str(stats.category_id) \
                     and not q.category_id:
                 excluded["other_category"] = excluded.get("other_category", 0) + 1
@@ -370,6 +386,10 @@ class KleinanzeigenClient:
             d.risk, d.seller = r[0], r[1].seller
             d.condition = r[1].attributes.get("Zustand")
             hit = next((t for t in (exclude or []) if t.lower() in r[1].description.lower()), None)
+            if not hit and scoring.wants_desktop_ram(exclude) and (
+                m := scoring.LAPTOP_RAM.search(f"{r[1].title} {r[1].description}")
+            ):
+                hit = m.group(0)
             if hit:
                 d.risk.hints.append(f"Beschreibung erwähnt '{hit}' – passt das Angebot wirklich?")
 
@@ -377,6 +397,11 @@ class KleinanzeigenClient:
         if defect:
             excluded["defect_after_check"] = len(defect)
             deals = [d for d in deals if d not in defect]
+        if scoring.wants_desktop_ram(exclude):  # laptop RAM only visible in the full description
+            laptop = [d for d in deals if d.risk and any("Beschreibung erwähnt" in h for h in d.risk.hints)]
+            if laptop:
+                excluded["laptop_ram_after_check"] = len(laptop)
+                deals = [d for d in deals if d not in laptop]
         best = next((d.ad.id for d in deals if d.risk and d.risk.level == "low"
                      and not any("Beschreibung erwähnt" in h for h in d.risk.hints)), None)
         return DealsResult(
@@ -516,8 +541,13 @@ class KleinanzeigenClient:
             best = max(cities.values(), key=lambda x: (districts(x), -found.index(x)))
         else:
             best = ranked[0]
-        alternatives = [x.name for x in cities.values() if x.id != best.id
-                        and x.name.split(" - ", 1)[-1].strip() != best.name.split(" - ", 1)[0].strip()]
+        # Only real ambiguity counts: other places whose suffix is a region ("Frankfurt (Oder) -
+        # Brandenburg"), not districts of a listed place ("Hamburg Barmbek - Hamburg-Nord").
+        listed = {y.name.split(" - ", 1)[0].strip() for y in found}
+        alternatives = [] if exact else [
+            x.name for x in cities.values()
+            if x.id != best.id and " - " in x.name and x.name.split(" - ", 1)[1].strip() not in listed
+        ]
         self._location_names[best.id] = best.name
         self._location_alts[best.id] = alternatives[:4]
         return best
