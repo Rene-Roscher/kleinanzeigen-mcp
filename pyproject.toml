@@ -1,9 +1,23 @@
 [project]
 name = "kleinanzeigen-mcp"
 version = "0.2.0"
-description = "MCP server + REST API for fresh Kleinanzeigen.de listings – polite, cached, token-protected."
+description = "Live Kleinanzeigen.de listings for AI assistants – search, deal finder and scam check over MCP or REST."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Rene Roscher" }]
 requires-python = ">=3.12"
+keywords = ["mcp", "model-context-protocol", "kleinanzeigen", "classifieds", "scraper", "deals"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: AsyncIO",
+    "Topic :: Internet :: WWW/HTTP",
+]
 dependencies = [
     "fastapi>=0.115",
     "httpx[http2,socks,brotli,zstd]>=0.28",
@@ -14,6 +28,11 @@ dependencies = [
     "tzdata>=2024.1",
     "uvicorn[standard]>=0.32",
 ]
+
+[project.urls]
+Repository = "https://github.com/Rene-Roscher/kleinanzeigen-mcp"
+Issues = "https://github.com/Rene-Roscher/kleinanzeigen-mcp/issues"
+Changelog = "https://github.com/Rene-Roscher/kleinanzeigen-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kleinanzeigen-mcp = "kleinanzeigen_mcp.__main__:main"
