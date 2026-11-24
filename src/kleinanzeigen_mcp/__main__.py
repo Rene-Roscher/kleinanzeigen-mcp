@@ -72,7 +72,7 @@ async def _search(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="kleinanzeigen-mcp")
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("stdio", help="MCP over stdio (default; for Claude Code / Desktop)")
+    sub.add_parser("stdio", help="MCP over stdio (default; for Claude Code, Claude Desktop, Cursor, ...)")
     sp = sub.add_parser("serve", help="HTTP server: REST /v1 + MCP /mcp")
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
