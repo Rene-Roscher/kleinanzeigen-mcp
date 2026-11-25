@@ -5,7 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.2.1] – 2026-11-25
 
+### Added
+- CI on Linux, macOS and Windows; package build/install check; Docker image build with health check.
+- Weekly live smoke test against the site.
+- Release workflow publishing to PyPI via trusted publishing; install with `uvx kleinanzeigen-mcp`.
+
 ### Fixed
+- Docker build failed because `LICENSE` was not copied into the image.
 - Built-in title filters dropped every ad starting with "Verkaufe …" because `kaufe ` matched inside
   `verkaufe`; the built-in terms are now anchored at word starts.
 - `exclude_terms` / `must_include` ignore hyphens, dots and underscores, so `sodimm` also removes `SO-DIMM`.

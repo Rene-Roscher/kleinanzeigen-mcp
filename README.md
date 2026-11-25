@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/Rene-Roscher/kleinanzeigen-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Rene-Roscher/kleinanzeigen-mcp/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://pypi.org/project/kleinanzeigen-mcp/"><img alt="PyPI" src="https://img.shields.io/pypi/v/kleinanzeigen-mcp"></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776ab">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-stdio%20%7C%20streamable%20HTTP-6f42c1">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
@@ -49,7 +50,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh     # or: brew install uv
 ### Claude Code
 
 ```bash
-claude mcp add -s user kleinanzeigen -- uvx --from git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp
+claude mcp add -s user kleinanzeigen -- uvx kleinanzeigen-mcp
 ```
 
 That's it – the client starts the server on demand over stdio. The first start takes 10–20 s while uv
@@ -64,19 +65,20 @@ Add this to your client's MCP config (`claude_desktop_config.json`, `~/.cursor/m
   "mcpServers": {
     "kleinanzeigen": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git", "kleinanzeigen-mcp"]
+      "args": ["kleinanzeigen-mcp"]
     }
   }
 }
 ```
 
-> **Private repository?** Use `git+ssh://git@github.com/Rene-Roscher/kleinanzeigen-mcp.git` with your SSH key,
-> or authenticate git for HTTPS (`gh auth login`). Update to the latest version with `uvx --refresh …`.
+> **Latest code from GitHub instead of PyPI:** replace `kleinanzeigen-mcp` in the commands above with
+> `--from git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp`.
+> Update an installed version with `uvx --refresh kleinanzeigen-mcp --help`.
 
 ### Try it from the terminal
 
 ```bash
-uvx --from git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp search "rtx 4090" -l München -r 50
+uvx kleinanzeigen-mcp search "rtx 4090" -l München -r 50
 ```
 
 ## Tools
@@ -167,7 +169,7 @@ It is a heuristic with reasons, not a verdict. Details: [docs/scoring.md](docs/s
 Run one central instance so all clients share one cache and one rate limit.
 
 ```bash
-uvx --from git+https://github.com/Rene-Roscher/kleinanzeigen-mcp.git kleinanzeigen-mcp gen-token my-laptop
+uvx kleinanzeigen-mcp gen-token my-laptop
 # → prints a token and the KA_API_TOKENS entry (store only the sha256 hash on the server)
 
 KA_API_TOKENS="my-laptop:sha256:<hash>" kleinanzeigen-mcp serve --host 0.0.0.0 --port 8080
@@ -230,6 +232,9 @@ uv run pytest                 # offline tests against anonymised HTML fixtures
 uv run pytest -m live         # smoke test against the real site (run sparingly)
 uv run ruff check src tests
 ```
+
+CI runs on Linux, macOS and Windows and also builds the package and the Docker image. A weekly workflow
+runs the live smoke test to catch markup changes on the site. Releases: [docs/releasing.md](docs/releasing.md).
 
 The repository ships a `.mcp.json`, so an MCP client opened in the project folder picks up the local server.
 See [CONTRIBUTING.md](CONTRIBUTING.md).

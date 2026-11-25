@@ -17,6 +17,10 @@ uv run ruff check src tests
 - **Tool descriptions are part of the API.** When changing an MCP tool, check that its description still says
   when to use it, when not to, and what the response contains.
 
+## Releases
+
+See [docs/releasing.md](docs/releasing.md).
+
 ## Project layout
 
 ```
