@@ -4,18 +4,56 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        include:
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: macos-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.13" }
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
       - run: uv sync --frozen
       - run: uv run ruff check src tests
       - run: uv run pytest
+
+  package:
+    name: build & install package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - name: Install the wheel in a clean environment and run the CLI
+        run: uvx --from "$(ls dist/*.whl)" kleinanzeigen-mcp --help
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t kleinanzeigen-mcp:ci .
+      - run: docker run --rm kleinanzeigen-mcp:ci kleinanzeigen-mcp --help
+      - name: Start the HTTP server and check /health
+        run: |
+          docker run -d --name ka -p 8080:8080 -e KA_API_TOKENS=ci:secret kleinanzeigen-mcp:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health && exit 0; sleep 1; done
+          docker logs ka; exit 1
