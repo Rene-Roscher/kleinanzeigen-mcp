@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] – 2026-11-25
+
+### Fixed
+- Built-in title filters dropped every ad starting with "Verkaufe …" because `kaufe ` matched inside
+  `verkaufe`; the built-in terms are now anchored at word starts.
+- `exclude_terms` / `must_include` ignore hyphens, dots and underscores, so `sodimm` also removes `SO-DIMM`.
+
 ## [0.2.0] – 2026-11-24
 
 ### Added

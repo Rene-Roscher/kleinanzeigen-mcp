@@ -225,7 +225,7 @@ def _deal(d: Deal) -> dict[str, Any]:
 # ------------------------------------------------------------------ tools
 def build_mcp(get_client: Any) -> MCPServer:
     """``get_client`` is a zero-arg callable returning the shared client."""
-    mcp = MCPServer("kleinanzeigen", instructions=INSTRUCTIONS, version="0.2.0")
+    mcp = MCPServer("kleinanzeigen", instructions=INSTRUCTIONS, version="0.2.1")
 
     async def _query(c: KleinanzeigenClient, *, query, location, radius_km, category, price_min=None,
                      price_max=None, seller_type=None, ad_type="offer", shipping=None, buy_now=False,

@@ -147,3 +147,18 @@ async def test_find_deals_drops_defective_items_after_check(fixture):
     res = await c.find_deals(SearchQuery(query="iphone"), check_top=2, limit=5)
     assert res.excluded.get("defect_after_check", 0) >= 1 and res.best_low_risk_id is None
     await c.aclose()
+
+
+def test_title_matching_ignores_hyphens_but_keeps_word_boundaries():
+    assert not scoring.title_matches("2x Crucial 32GB DDR5-4800 SO-DIMM RAM", None, ["sodimm"])
+    assert not scoring.title_matches("Crucial SO.DIMM 16GB", None, ["so-dimm"])
+    assert scoring.title_matches("Verkaufe Kingston Fury 32GB", None, list(scoring.DEFAULT_EXCLUDE))
+    assert scoring.title_matches("G.Skill Trident Z5 RGB DDR5-6000", ["g.skill|gskill"], None)
+
+
+def test_default_excludes_are_word_anchored():
+    ex = list(scoring.DEFAULT_EXCLUDE)
+    for keep in ["Verkaufe Kingston Fury 32GB", "Versuche es mal: RTX 4090", "Umtausch-fähig: iPhone 15 Pro"]:
+        assert scoring.title_matches(keep, None, ex), keep
+    for drop in ["Suche DDR5 32GB", "Kaufe dein altes iPhone", "Tausche PS5 gegen Xbox", "ANKAUF Handys"]:
+        assert not scoring.title_matches(drop, None, ex), drop

@@ -14,8 +14,10 @@ from .models import AdDetail, AdSummary, AdType, MarketStats, RiskAssessment, Se
 from .parser import BERLIN
 
 # Titles that are not a normal offer of the item itself.
+# A leading space anchors a term at a word start (titles are padded with spaces before matching):
+# " kaufe " drops "Kaufe dein iPhone" but keeps "Verkaufe iPhone".
 DEFAULT_EXCLUDE = (
-    "suche", "gesucht", "ankauf", "kaufe ", "wir kaufen", "tausche", "tausch ", "defekt", "defeckt",
+    " suche", "gesucht", "ankauf", " kaufe ", "wir kaufen", " tausche", " tausch ", "defekt", "defeckt",
     "kaputt", "bastler", "ersatzteil", "ohne funktion", "nicht funktionsfähig", "nicht funktionsfaehig",
 )
 
@@ -34,16 +36,25 @@ def wants_desktop_ram(exclude: list[str] | None) -> bool:
 # --------------------------------------------------------------- matching
 def title_matches(title: str, must_include: list[str] | None, exclude: list[str] | None) -> bool:
     """``must_include``: every entry must match; an entry may list alternatives with ``|``
-    (e.g. ``"32gb|2x16"``). ``exclude``: none of the substrings may occur."""
-    t = " " + title.lower() + " "
+    (e.g. ``"32gb|2x16"``). ``exclude``: none of the substrings may occur.
+
+    Hyphens, dots and underscores are ignored on both sides, so ``sodimm`` also matches
+    ``SO-DIMM`` and ``2x16`` matches ``2x-16``. Spaces are kept: the built-in ``"kaufe "``
+    must not match ``verkaufe``.
+    """
+    t = " " + _fold_punct(title) + " "
     for term in exclude or ():
-        if term.lower() in t:
+        if _fold_punct(term) in t:
             return False
     for term in must_include or ():
-        alts = [x.strip().lower() for x in term.split("|") if x.strip()]
+        alts = [_fold_punct(x.strip()) for x in term.split("|") if x.strip()]
         if alts and not any(a in t for a in alts):
             return False
     return True
+
+
+def _fold_punct(s: str) -> str:
+    return re.sub(r"[-_./]", "", s.lower())
 
 
 def title_position(title: str, terms: list[str]) -> float:

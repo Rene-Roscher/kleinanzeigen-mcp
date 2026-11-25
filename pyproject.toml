@@ -1,6 +1,6 @@
 [project]
 name = "kleinanzeigen-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Live Kleinanzeigen.de listings for AI assistants – search, deal finder and scam check over MCP or REST."
 readme = "README.md"
 license = "MIT"
